@@ -154,7 +154,7 @@ PROCESS_TIMEOUT: int = max(
 
 ################################################################################
 
-BANNER_VERSION = 35
+BANNER_VERSION = 37
 
 BANNER = rf"""***
 # **{PROXY_NAME}** ({PROXY_VERSION} {PROXY_BRANCH})
@@ -190,13 +190,11 @@ Pull requests are welcome at `https://github.com/vu5eruz/GeminiForJanitors` for 
 
 ## **Updates**
 
-## June 19, 2026
+## August 10, 2026
 
-● Notice: if you are using API keys that start with `AIza`, know that Google will reject them starting September 2026! You are advised to update all your keys to the new `AQ.` type!  See https://ai.google.dev/gemini-api/docs/api-key for more info.
+● **Custom Update:** The 403 "Concurrent use is not allowed" error lock has been completely removed from this instance! You can now generate multiple responses at the same time without restrictions or waiting. Enjoy multi-chatting!
 
 ## July 28, 2026
-
-● The proxy has had an internal rework and the Gemini provider code was changed. Please report any issues to the Gemini Proxy Guide.
 
 ● New command `//fixturns` is now available to help deal with "`requests ending with a model turn are not supported`" errors!
 
