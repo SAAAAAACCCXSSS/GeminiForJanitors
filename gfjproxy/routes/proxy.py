@@ -45,11 +45,12 @@ def handle():
     api_keys = comma_split(request_auth[1])
     xuid = XUID(api_keys[0], xuid_secret)
 
-    if not storage.lock(xuid):
-        xlog(xuid, "User attempted concurrent use")
-        return response.build_error(
-            "Concurrent use is not allowed. Please wait a moment.", 403
-        )
+    # Блокировка одновременных запросов отключена
+    # if not storage.lock(xuid):
+    #     xlog(xuid, "User attempted concurrent use")
+    #     return response.build_error(
+    #         "Concurrent use is not allowed. Please wait a moment.", 403
+    #     )
 
     user = UserSettings(storage, xuid)
 
@@ -61,7 +62,7 @@ def handle():
         and (delay := cooldown - seconds) > 0
     ):
         xlog(user, f"User told to wait {delay} seconds")
-        storage.unlock(xuid)
+        # storage.unlock(xuid)  # Разблокировку здесь тоже отключаем
         return response.build_error(f"Please wait {delay} seconds.", 429)
 
     # Handle user's request
@@ -123,6 +124,7 @@ def handle():
     else:
         xlog(user, "Invalid user not saved")
 
-    storage.unlock(xuid)
+    # Финальная разблокировка отключена
+    # storage.unlock(xuid)
 
     return response.build()
