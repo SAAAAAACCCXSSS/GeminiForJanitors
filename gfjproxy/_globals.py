@@ -154,37 +154,12 @@ PROCESS_TIMEOUT: int = max(
 
 ################################################################################
 
-BANNER_VERSION = 37
+BANNER_VERSION = 38
 
 BANNER = rf"""***
-# **{PROXY_NAME}** ({PROXY_VERSION} {PROXY_BRANCH})
-*Hosted by {PROXY_ADMIN}*
+*Hosted by dainsleifswife*
 
-This proxy is hosted by volunteers, bound to Render's monthly 100 GB bandwidth quota.
-Go to `https://gfjproxies.vu5eruz.workers.dev/` for a list of URLs you can use.
-Make sure to use URLs with low `bandwidth` usage!
-
-***
-
-## **Features**
-
-You can use commands and set jailbreaks in your chat. Send a message with `//help commands` for more info.
-
-You can use multiple API keys and automatically switch between them. Send a message with `//help multikey` for more info.
-
-You can use models from different companies: Cerebras, DeepSeek, Google, Nvidia NIM, OpenRouter, and Z.AI. Send a message with `//help providers` for more info.
-
-You can see proxy statistics and find out if there are more errors than usual. Open `{PROXY_URL}/stats` to find out.
-
-You should only see this banner if you are a new user or if there is an update. Send a message with `//banner` to see this banner again. Change your proxy URL to `{PROXY_URL}/quiet/` to disable it.
-
-***
-
-## **Notice**
-
-On **August 1, 2026**, Render will impose a 5 GB bandwidth limit on free instances, which will suspend all public URLs very quickly.
-Anyone with knowledge in Python programming can help porting and deploying the proxy to other clouds, such as Netlify, Vercel, or Railway.
-Pull requests are welcome at `https://github.com/vu5eruz/GeminiForJanitors` for contributions.
+я жена дайнслейфа лол кек чебурек
 
 ***
 
@@ -193,10 +168,6 @@ Pull requests are welcome at `https://github.com/vu5eruz/GeminiForJanitors` for 
 ## August 10, 2026
 
 ● **Custom Update:** The 403 "Concurrent use is not allowed" error lock has been completely removed from this instance! You can now generate multiple responses at the same time without restrictions or waiting. Enjoy multi-chatting!
-
-## July 28, 2026
-
-● New command `//fixturns` is now available to help deal with "`requests ending with a model turn are not supported`" errors!
 
 """
 
