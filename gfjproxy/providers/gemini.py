@@ -1,3 +1,5 @@
+import base64
+import re
 from typing import Any
 
 import httpx2
@@ -38,7 +40,8 @@ def _resolve_link(user: XUID, link: str) -> str:
 def _get_finish_reason_feedback(response: dict[str, Any]) -> str | None:
     """Extracts a human-readable message from a failed GenerateContentResponse dictionary.
 
-    Returns None if no message could be extracted."""
+    Returns None if no message could be extracted.
+    """
 
     prompt_feedback = response.get("promptFeedback")
     if isinstance(prompt_feedback, dict):
@@ -56,7 +59,8 @@ def _get_finish_reason_feedback(response: dict[str, Any]) -> str | None:
 def _get_quota_violation_feedback(qid: str) -> str | None:
     """Converts a quota ID into a human-readable message.
 
-    Returns None if an unknown quota ID is given."""
+    Returns None if an unknown quota ID is given.
+    """
 
     if qid.startswith(
         (
@@ -78,6 +82,253 @@ def _get_quota_violation_feedback(qid: str) -> str | None:
     return None
 
 
+################################################################################
+# OpenAI / Tavo multimodal compatibility
+################################################################################
+
+
+def _data_url_to_gemini_part(data_url: str) -> dict[str, Any] | None:
+    """
+    Convert:
+        data:image/jpeg;base64,/9j/...
+
+    into Gemini REST format:
+        {
+            "inlineData": {
+                "mimeType": "image/jpeg",
+                "data": "/9j/..."
+            }
+        }
+    """
+
+    match = re.match(
+        r"^data:([^;,]+);base64,(.+)$",
+        data_url,
+        flags=re.DOTALL,
+    )
+
+    if not match:
+        return None
+
+    mime_type = match.group(1).strip()
+    encoded_data = match.group(2).strip()
+
+    if not mime_type or not encoded_data:
+        return None
+
+    return {
+        "inlineData": {
+            "mimeType": mime_type,
+            "data": encoded_data,
+        }
+    }
+
+
+def _remote_image_to_gemini_part(
+    user: XUID,
+    image_url: str,
+) -> dict[str, Any] | None:
+    """
+    Download a remote image URL and convert it to Gemini inlineData.
+
+    This is useful when Tavo sends:
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": "https://..."
+            }
+        }
+    """
+
+    try:
+        response = http_client.get(
+            image_url,
+            timeout=PROCESS_TIMEOUT,
+        )
+        response.raise_for_status()
+
+        content_type = response.headers.get("content-type", "image/jpeg")
+        mime_type = content_type.split(";", maxsplit=1)[0].strip()
+
+        if not mime_type.startswith("image/"):
+            xlog(
+                user,
+                f"Remote multimodal URL is not an image: {mime_type}",
+            )
+            return None
+
+        encoded_data = base64.b64encode(response.content).decode("ascii")
+
+        return {
+            "inlineData": {
+                "mimeType": mime_type,
+                "data": encoded_data,
+            }
+        }
+
+    except Exception as e:  # ruff: ignore[BLE001]
+        xlog(
+            user,
+            f"Could not download multimodal image: {e!r}",
+        )
+        return None
+
+
+def _openai_content_to_gemini_parts(
+    user: XUID,
+    content: Any,
+) -> list[dict[str, Any]]:
+    """
+    Convert OpenAI-compatible message content into Gemini parts.
+
+    Supported formats:
+
+    Plain text:
+        "hello"
+
+    OpenAI/Tavo multimodal:
+        [
+            {
+                "type": "text",
+                "text": "What's in this image?"
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/jpeg;base64,..."
+                }
+            }
+        ]
+
+    Also supports image_url supplied directly as a string.
+    """
+
+    if isinstance(content, str):
+        return [{"text": content}]
+
+    if not isinstance(content, list):
+        return [{"text": str(content)}]
+
+    parts: list[dict[str, Any]] = []
+
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+
+        block_type = block.get("type")
+
+        ########################################################################
+        # Text
+        ########################################################################
+
+        if block_type in ("text", "input_text"):
+            text = block.get("text")
+
+            if isinstance(text, str) and text:
+                parts.append({"text": text})
+
+            continue
+
+        ########################################################################
+        # OpenAI image_url
+        ########################################################################
+
+        if block_type in ("image_url", "input_image"):
+            image_value = block.get("image_url")
+
+            if isinstance(image_value, dict):
+                image_url = image_value.get("url")
+            else:
+                image_url = image_value
+
+            # Some OpenAI-compatible frontends use `url` directly.
+            if not image_url:
+                image_url = block.get("url")
+
+            # Responses API-like format may use `image_url` as another field.
+            if not image_url:
+                image_url = block.get("image")
+
+            if not isinstance(image_url, str) or not image_url:
+                continue
+
+            ####################################################################
+            # Base64 / data URI image
+            ####################################################################
+
+            if image_url.startswith("data:"):
+                image_part = _data_url_to_gemini_part(image_url)
+
+                if image_part:
+                    parts.append(image_part)
+                    xlog(user, "Added base64 image to Gemini request")
+
+                continue
+
+            ####################################################################
+            # Remote image
+            ####################################################################
+
+            if image_url.startswith(("https://", "http://")):
+                image_part = _remote_image_to_gemini_part(
+                    user,
+                    image_url,
+                )
+
+                if image_part:
+                    parts.append(image_part)
+                    xlog(user, "Added remote image to Gemini request")
+
+                continue
+
+        ########################################################################
+        # Some clients already send Gemini-like inline data
+        ########################################################################
+
+        if block_type in ("inline_data", "inlineData"):
+            inline = (
+                block.get("inline_data")
+                or block.get("inlineData")
+                or block
+            )
+
+            if not isinstance(inline, dict):
+                continue
+
+            mime_type = (
+                inline.get("mime_type")
+                or inline.get("mimeType")
+            )
+
+            data = inline.get("data")
+
+            if (
+                isinstance(mime_type, str)
+                and isinstance(data, str)
+                and mime_type
+                and data
+            ):
+                parts.append(
+                    {
+                        "inlineData": {
+                            "mimeType": mime_type,
+                            "data": data,
+                        }
+                    }
+                )
+
+            continue
+
+    # Gemini requires at least one part.
+    if not parts:
+        parts.append({"text": "."})
+
+    return parts
+
+
+################################################################################
+
+
 def gemini_generate_content(
     user: XUID,
     api_key: str,
@@ -87,10 +338,26 @@ def gemini_generate_content(
 ) -> JaiResult:
     """Wrapper around Google AI's Gemini.
 
-    User paramater is only used for logging. Generation settings must all be passed inside the
-    settings parameter."""
+    User parameter is only used for logging.
+    Generation settings must all be passed inside the settings parameter.
+    """
 
     generation_config: dict[str, Any] = {}
+
+    contents: list[dict[str, Any]] = []
+
+    for msg in messages:
+        parts = _openai_content_to_gemini_parts(
+            user,
+            msg.content,
+        )
+
+        contents.append(
+            {
+                "role": "user" if msg.role == "user" else "model",
+                "parts": parts,
+            }
+        )
 
     gemini_request: dict[str, Any] = {
         "safetySettings": [
@@ -116,28 +383,28 @@ def gemini_generate_content(
             },
         ],
         "generationConfig": generation_config,
-        "contents": [
-            {
-                "role": "user" if msg.role == "user" else "model",
-                "parts": [{"text": msg.content}],
-            }
-            for msg in messages
-        ],
+        "contents": contents,
     }
 
     for key, value in (settings or {}).items():
         if key == "temperature":
             generation_config["temperature"] = value
+
         elif key == "max_tokens":
             generation_config["maxOutputTokens"] = value
+
         elif key == "top_k":
             generation_config["topK"] = value
+
         elif key == "top_p":
             generation_config["topP"] = value
+
         elif key == "frequency_penalty":
             generation_config["frequencyPenalty"] = value
+
         elif key == "repetition_penalty":
             generation_config["presencePenalty"] = value
+
         elif key == "search" and value:
             gemini_request["tools"] = [{"googleSearch": {}}]
 
@@ -148,59 +415,105 @@ def gemini_generate_content(
             json=gemini_request,
             timeout=PROCESS_TIMEOUT,
         )
+
         response.raise_for_status()
         gemini_result = response.json()
+
     except httpx2.TimeoutException:
         track_stats("g.time_out")
-        return JaiResult(504, "Gateway Timeout")
+        return JaiResult(
+            504,
+            "Gateway Timeout",
+        )
+
     except httpx2.HTTPStatusError as e:
         message = "Error from Google AI"
+
         metadata = JaiResultMetadata()
         extras = ""
 
         if e.response.is_client_error:
             stats_key = "g.failed.client"
+
         elif e.response.is_server_error:
             stats_key = "g.failed.server"
+
         else:
             stats_key = "g.failed.unknown"
 
-        if error := e.response.json():
+        try:
+            error = e.response.json()
+        except Exception:  # ruff: ignore[BLE001]
+            error = None
+
+        if error:
             if "error" in error:
                 error = error["error"]
 
-            error_code = error.get("code", e.response.status_code)
-            error_message = error.get("message", "")
-            error_status = error.get("status", "")
-            error_details = error.get("details", [])
+            error_code = error.get(
+                "code",
+                e.response.status_code,
+            )
+
+            error_message = error.get(
+                "message",
+                "",
+            )
+
+            error_status = error.get(
+                "status",
+                "",
+            )
+
+            error_details = error.get(
+                "details",
+                [],
+            )
 
             if error_status == "NOT_FOUND":
                 stats_key += ".not_found"
+
                 if error_message.startswith("models/"):
                     stats_key += ".model"
-                    error_message = f"Invalid/unsupported model '{model}'"
+                    error_message = (
+                        f"Invalid/unsupported model '{model}'"
+                    )
+
                 elif "no longer available" in error_message:
                     stats_key += ".unavailable"
-                    error_message = f"Model '{model}' is no longer available"
+                    error_message = (
+                        f"Model '{model}' is no longer available"
+                    )
+
             elif error_status == "UNAUTHENTICATED":
                 stats_key += ".unauthenticated"
+
                 if "invalid authentication credentials" in error_message:
                     stats_key += ".api_key"
+
                     error_message = (
                         "Request had invalid authentication credentials.\n"
                         "Your API key is probably not valid."
                     )
+
                     metadata.api_key_valid = False
+
             elif error_status == "INVALID_ARGUMENT":
                 stats_key += ".invalid"
+
                 if "API key not valid" in error_message:
                     stats_key += ".api_key"
                     metadata.api_key_valid = False
+
                 elif "ending with a model turn" in error_message:
                     stats_key += ".turns"
-                    extras = "Disable your prefills or use `//fixturns on`."
+                    extras = (
+                        "Disable your prefills or use `//fixturns on`."
+                    )
+
             elif error_status == "PERMISSION_DENIED":
                 stats_key += ".denied"
+
                 for detail in error_details:
                     if (
                         not isinstance(detail, dict)
@@ -209,18 +522,31 @@ def gemini_generate_content(
                         or not (reason := detail.get("reason"))
                     ):
                         continue
+
                     if reason == "SERVICE_DISABLED":
                         stats_key += ".disabled"
-                        error_message = "Generative Language API needs to be enabled"
+
+                        error_message = (
+                            "Generative Language API needs to be enabled"
+                        )
+
                         break
+
                     if reason == "CONSUMER_SUSPENDED":
                         stats_key += ".suspended"
-                        error_message = "Customer suspended. You might be banned."
+
+                        error_message = (
+                            "Customer suspended. You might be banned."
+                        )
+
                         break
+
                 else:
                     stats_key += ".unknown"
+
             elif error_status == "RESOURCE_EXHAUSTED":
                 stats_key += ".quota"
+
                 for detail in error_details:
                     if (
                         not isinstance(detail, dict)
@@ -228,46 +554,80 @@ def gemini_generate_content(
                         != "type.googleapis.com/google.rpc.QuotaFailure"
                     ):
                         continue
+
                     quota_ids = (
                         str(v.get("quotaId", ""))
                         for v in detail.get("violations", [])
                         if isinstance(v, dict)
                     )
+
                     for qid in quota_ids:
                         if feedback := _get_quota_violation_feedback(qid):
                             stats_key += f".{qid}"
                             error_message = feedback
                             break
+
                     else:
                         stats_key += ".unknown"
                         break
 
-            message += f" ({error_code}): {error_status}\n{error_message}"
+            message += (
+                f" ({error_code}): "
+                f"{error_status}\n"
+                f"{error_message}"
+            )
+
         elif error_text := e.response.text:
-            xlog(user, f"{message}: {e.response.text!r}")
+            xlog(
+                user,
+                f"{message}: {e.response.text!r}",
+            )
 
             message += (
-                f" ({e.response.status_code}):\n{error_text[:100]}"
+                f" ({e.response.status_code}):\n"
+                f"{error_text[:100]}"
                 f"{'...' if len(error_text) > 100 else ''}"
             )
 
         track_stats(stats_key)
+
         return JaiResult(
-            e.response.status_code, message, extras=extras, metadata=metadata
+            e.response.status_code,
+            message,
+            extras=extras,
+            metadata=metadata,
         )
+
     except Exception as e:  # ruff: ignore[BLE001]
-        xlog(user, repr(e))  # These are R E A L L Y anomalous
+        xlog(
+            user,
+            repr(e),
+        )
+
         track_stats("g.failed.unknown")
-        return JaiResult(502, "Unhanded exception from Google AI.")
+
+        return JaiResult(
+            502,
+            "Unhandled exception from Google AI.",
+        )
 
     text = ""
     extras = ""
+
     metadata = JaiResultMetadata()
 
-    if (candidates := gemini_result.get("candidates")) and isinstance(candidates, list):
+    if (
+        (candidates := gemini_result.get("candidates"))
+        and isinstance(candidates, list)
+    ):
         if len(candidates) > 1:
-            xlog(user, "Warning: more than one candidate found in response")
+            xlog(
+                user,
+                "Warning: more than one candidate found in response",
+            )
+
         candidate = candidates[0]
+
         if isinstance(candidate, dict):
             if (
                 (content := candidate.get("content"))
@@ -276,26 +636,48 @@ def gemini_generate_content(
                 and isinstance(parts, list)
             ):
                 text = ""
+
                 for part in parts:
                     if isinstance(part, dict):
                         part_text = part.get("text")
-                        part_thought = part.get("thought", False)
-                        if isinstance(part_text, str) and not part_thought:
+                        part_thought = part.get(
+                            "thought",
+                            False,
+                        )
+
+                        if (
+                            isinstance(part_text, str)
+                            and not part_thought
+                        ):
                             text += part_text
 
             if gm := candidate.get("groundingMetadata"):
                 # U+3164 HANGUL FILLER
 
-                if isinstance((wsqs := gm.get("webSearchQueries")), list):
-                    xlog(user, f"Made {len(wsqs)} web searches")
+                if isinstance(
+                    (wsqs := gm.get("webSearchQueries")),
+                    list,
+                ):
+                    xlog(
+                        user,
+                        f"Made {len(wsqs)} web searches",
+                    )
+
                     extras += (
                         "Searches:\n"
-                        + "\n".join(f"\u3164- {wsq}" for wsq in wsqs)
+                        + "\n".join(
+                            f"\u3164- {wsq}"
+                            for wsq in wsqs
+                        )
                         + "\n"
                     )
 
-                if isinstance((gcs := gm.get("groundingChunks")), list):
+                if isinstance(
+                    (gcs := gm.get("groundingChunks")),
+                    list,
+                ):
                     links: list[str] = []
+
                     for gc in gcs:
                         if (
                             isinstance(gc, dict)
@@ -303,23 +685,49 @@ def gemini_generate_content(
                             and isinstance(web, dict)
                             and (uri := web.get("uri"))
                         ):
-                            links.append(_resolve_link(user, uri))
-                    xlog(user, f"Found {len(gcs)} grounding chunks {len(links)} links")
+                            links.append(
+                                _resolve_link(
+                                    user,
+                                    uri,
+                                )
+                            )
+
+                    xlog(
+                        user,
+                        (
+                            f"Found {len(gcs)} grounding chunks "
+                            f"{len(links)} links"
+                        ),
+                    )
+
                     extras += (
                         "Links:\n"
-                        + "\n".join(f"\u3164- {link}" for link in links)
+                        + "\n".join(
+                            f"\u3164- {link}"
+                            for link in links
+                        )
                         + "\n"
                     )
 
     if not text:
         # Rejection
 
-        feedback = _get_finish_reason_feedback(gemini_result)
+        feedback = _get_finish_reason_feedback(
+            gemini_result,
+        )
+
         if not feedback:
-            xlog(user, f"No result text: {gemini_result}")
+            xlog(
+                user,
+                f"No result text: {gemini_result}",
+            )
+
             feedback = "UNKNOWN"
 
-        track_stats(f"g.rejected.{feedback}")
+        track_stats(
+            f"g.rejected.{feedback}",
+        )
+
         return JaiResult(
             502,
             f"Response blocked/empty due to {feedback}.",
@@ -328,13 +736,30 @@ def gemini_generate_content(
             ),
         )
 
-    if isinstance((usage := gemini_result.get("usageMetadata")), dict):
+    if isinstance(
+        (usage := gemini_result.get("usageMetadata")),
+        dict,
+    ):
         metadata.token_usage = JaiResultTokenUsage(
-            prompt_tokens=usage.get("promptTokenCount"),
-            completion_tokens=usage.get("candidatesTokenCount"),
-            reasoning_tokens=usage.get("thoughtsTokenCount"),
-            total_tokens=usage.get("totalTokenCount"),
+            prompt_tokens=usage.get(
+                "promptTokenCount",
+            ),
+            completion_tokens=usage.get(
+                "candidatesTokenCount",
+            ),
+            reasoning_tokens=usage.get(
+                "thoughtsTokenCount",
+            ),
+            total_tokens=usage.get(
+                "totalTokenCount",
+            ),
         )
 
     track_stats("g.succeeded")
-    return JaiResult(200, text, extras=extras, metadata=metadata)
+
+    return JaiResult(
+        200,
+        text,
+        extras=extras,
+        metadata=metadata,
+                    )
