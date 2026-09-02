@@ -76,19 +76,55 @@ class ResponseHelper:
         return self
 
     def build(self) -> Response:
-        if self._status != 200 and len(self._messages) == 1:
+        if self._status != 200:
+            # If the upstream/provider request failed, always return
+            # a real HTTP error even if proxy/command messages were
+            # queued before the provider request.
+            #
+            # Without this, something like:
+            #
+            #   "Braille Trick enabled..."
+            #   + Google AI 503
+            #
+            # becomes a normal HTTP 200 assistant response and JanitorAI
+            # saves the error as a chat message.
+            #
+            # On failure, command/proxy acknowledgements are discarded
+            # and only actual ERROR messages are returned.
+
+            error_messages = [
+                message
+                for message in self._messages
+                if message.kind == MessageKind.ERROR
+            ]
+
+            if error_messages:
+                error_text = "\n".join(
+                    message.text
+                    for message in error_messages
+                ).strip()
+            else:
+                error_text = self.message.strip()
+
             if self._wrap_errors:
                 return Response(
-                    response=[json.dumps({"error": self.message.strip()})],
+                    response=[
+                        json.dumps(
+                            {
+                                "error": error_text,
+                            }
+                        )
+                    ],
                     status=self._status,
                     content_type="application/json; charset=utf-8",
                 )
             else:
                 return Response(
-                    response=[self.message],
+                    response=[error_text],
                     status=self._status,
                     content_type="text/plain; charset=utf-8",
                 )
+
         elif self._use_stream:
             return Response(
                 response=[
@@ -288,13 +324,13 @@ def utcnow() -> datetime.datetime:
 
 # https://github.com/googleapis/google-cloud-python/blob/b9466f9c85c94331ffc39e1da3cf98fb5ff7d612/packages/google-auth/google/auth/_helpers.py#L127
 def utcfromtimestamp(timestamp: float) -> datetime.datetime:
-    """Returns the UTC datetime from a timestamp.
+    """Returns the UTC datetime.
 
     Args:
         timestamp (float): The timestamp, in fractional seconds, to convert.
 
     Returns:
-        datetime: The time in UTC.
+        datetime: The current UTC datetime.
     """
     return datetime.datetime.fromtimestamp(timestamp, tz=datetime.UTC)
 
