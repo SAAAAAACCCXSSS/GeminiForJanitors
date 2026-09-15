@@ -3,15 +3,22 @@ from traceback import print_exception
 from flask import Blueprint, abort, request
 
 from ..cooldown import get_cooldown
-from ..handlers import handle_chat_message, handle_proxy_test
+from ..handlers import PROVIDER_FUNCS, handle_chat_message, handle_proxy_test
 from ..logging import xlog, xlogtime
 from ..models import JaiRequest
+from ..providers.mistral import mistral_generate_content
 from ..storage import storage
 from ..utils import ResponseHelper, comma_split, is_proxy_test
 from ..xuid_secret import xuid_secret
 from ..xuiduser import XUID, UserSettings
 
 proxy = Blueprint("proxy", __name__)
+
+# Mistral Studio keys do not have a stable public prefix that can be safely
+# pattern-matched. Register Mistral as a native provider here. A raw Mistral
+# key is automatically routed below when the request contains only a Mistral
+# model; explicit `mistral/<key>` syntax also keeps working.
+PROVIDER_FUNCS["mistral"] = mistral_generate_content
 
 
 # JanitorAI routes
@@ -92,7 +99,15 @@ def handle():
 
     user.inc_rcounter()
 
-    jai_req.api_key = api_keys[api_key_index]
+    selected_api_key = api_keys[api_key_index]
+
+    # A raw Mistral Studio key has no reliable provider-specific prefix.
+    # Infer Mistral only when this request contains a single Mistral provider.
+    # Multi-provider setups can still use explicit `mistral/<key>` syntax.
+    if set(jai_req.models) == {"mistral"} and "/" not in selected_api_key:
+        selected_api_key = f"mistral/{selected_api_key}"
+
+    jai_req.api_key = selected_api_key
     jai_req.api_key_index = api_key_index
     jai_req.api_key_count = len(api_keys)
 
