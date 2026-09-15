@@ -6,6 +6,7 @@ from ..cooldown import get_cooldown
 from ..handlers import PROVIDER_FUNCS, handle_chat_message, handle_proxy_test
 from ..logging import xlog, xlogtime
 from ..models import JaiRequest
+from ..providers.cloudflare import cloudflare_generate_content
 from ..providers.mistral import mistral_generate_content
 from ..storage import storage
 from ..utils import ResponseHelper, comma_split, is_proxy_test
@@ -13,6 +14,11 @@ from ..xuid_secret import xuid_secret
 from ..xuiduser import XUID, UserSettings
 
 proxy = Blueprint("proxy", __name__)
+
+# Cloudflare credentials are supplied per-user in the API key as:
+# cloudflare/ACCOUNT_ID:API_TOKEN
+# Nothing is stored in Render, so every user consumes their own Workers AI quota.
+PROVIDER_FUNCS["cloudflare"] = cloudflare_generate_content
 
 # Mistral Studio keys do not have a stable public prefix that can be safely
 # pattern-matched. Register Mistral as a native provider here. A raw Mistral
