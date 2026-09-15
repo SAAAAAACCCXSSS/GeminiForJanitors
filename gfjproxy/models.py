@@ -135,6 +135,9 @@ class JaiRequest:
                 elif model.startswith("deepseek-"):
                     jai_req.models["deepseek"] = model
 
+                elif model.startswith("mistral-"):
+                    jai_req.models["mistral"] = model
+
                 else:
                     # Build a comma-separated list of unknown models
                     if unknown := jai_req.models.get("unknown"):
