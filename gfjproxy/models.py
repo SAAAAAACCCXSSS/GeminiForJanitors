@@ -11,6 +11,98 @@ from .utils import comma_split
 ################################################################################
 
 
+_COMMAND_SPACE_TRANSLATION = str.maketrans(
+    {
+        "\u2800": " ",  # Braille Pattern Blank
+        "\u00a0": " ",  # NO-BREAK SPACE
+        "\u2007": " ",  # FIGURE SPACE
+        "\u202f": " ",  # NARROW NO-BREAK SPACE
+        "\u200b": "",   # ZERO WIDTH SPACE
+        "\ufeff": "",   # ZERO WIDTH NO-BREAK SPACE / BOM
+        "\u2060": "",   # WORD JOINER
+    }
+)
+
+
+def _parse_user_text(text: str) -> tuple[list[Command], str]:
+    """Parse proxy commands only when the user text actually starts with //.
+
+    This avoids treating documentation/system text that merely mentions
+    //btrick, //fixturns, etc. as executable commands.
+
+    Tavo and some OpenAI-compatible frontends may also introduce visually
+    invisible Unicode spacing characters, so command-leading text is normalized
+    before it reaches the legacy command parser.
+    """
+
+    if not isinstance(text, str):
+        return [], str(text)
+
+    stripped = text.strip()
+
+    if not stripped.startswith("//"):
+        # Keep ordinary user text untouched apart from outer whitespace.
+        return [], stripped
+
+    normalized = stripped.translate(_COMMAND_SPACE_TRANSLATION)
+    return parse_message(normalized)
+
+
+def _parse_structured_content(
+    role: str,
+    content: list,
+) -> tuple[list[Command], list]:
+    """Parse OpenAI/Tavo structured message content without dropping images.
+
+    Tavo may send:
+        [
+            {"type": "text", "text": "..."},
+            {"type": "image_url", "image_url": {"url": "..."}}
+        ]
+
+    The old compatibility code preserved the list but never ran parse_message()
+    for its text blocks, which meant proxy commands could silently stop working
+    for Tavo while continuing to work in JanitorAI.
+    """
+
+    commands: list[Command] = []
+    parsed_content: list = []
+
+    for block in content:
+        # Be tolerant of string items in a structured array.
+        if isinstance(block, str):
+            if role == "user":
+                block_commands, clean_text = _parse_user_text(block)
+                commands.extend(block_commands)
+                parsed_content.append(clean_text)
+            else:
+                parsed_content.append(strip_message(block))
+            continue
+
+        if not isinstance(block, dict):
+            parsed_content.append(block)
+            continue
+
+        new_block = dict(block)
+        text = new_block.get("text")
+
+        if isinstance(text, str):
+            if role == "user":
+                block_commands, clean_text = _parse_user_text(text)
+                commands.extend(block_commands)
+                new_block["text"] = clean_text
+            else:
+                new_block["text"] = strip_message(text)
+
+        # Image/audio/other blocks are kept exactly as they were.
+        parsed_content.append(new_block)
+
+    return commands, parsed_content
+
+
+################################################################################
+
+
 @dataclass(kw_only=True, slots=True)
 class JaiMessage:
     """JanitorAI / OpenAI-compatible Message."""
@@ -35,17 +127,16 @@ class JaiMessage:
 
         content = data.get("content")
 
-        # OpenAI/Tavo multimodal message:
-        # [
-        #   {"type": "text", "text": "..."},
-        #   {"type": "image_url", "image_url": {"url": "..."}}
-        # ]
+        # OpenAI/Tavo structured or multimodal message.
         if isinstance(content, list):
-            jai_msg.content = content
+            jai_msg.commands, jai_msg.content = _parse_structured_content(
+                jai_msg.role,
+                content,
+            )
 
         elif isinstance(content, str):
-            if role == "user":
-                jai_msg.commands, jai_msg.content = parse_message(content)
+            if jai_msg.role == "user":
+                jai_msg.commands, jai_msg.content = _parse_user_text(content)
             else:
                 jai_msg.content = strip_message(content)
 
