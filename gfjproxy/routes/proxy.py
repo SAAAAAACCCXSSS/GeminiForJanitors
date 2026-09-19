@@ -15,16 +15,67 @@ from ..xuiduser import XUID, UserSettings
 
 proxy = Blueprint("proxy", __name__)
 
-# Cloudflare credentials are supplied per-user in the API key as:
-# cloudflare/ACCOUNT_ID:API_TOKEN
-# Nothing is stored in Render, so every user consumes their own Workers AI quota.
 PROVIDER_FUNCS["cloudflare"] = cloudflare_generate_content
-
-# Mistral Studio keys do not have a stable public prefix that can be safely
-# pattern-matched. Register Mistral as a native provider here. A raw Mistral
-# key is automatically routed below when the request contains only a Mistral
-# model; explicit `mistral/<key>` syntax also keeps working.
 PROVIDER_FUNCS["mistral"] = mistral_generate_content
+
+
+def _debug_raw_user_messages(request_json: dict) -> None:
+    """Temporary safe diagnostic for Tavo/Janitor request shapes.
+
+    Does NOT log Authorization/API keys. It prints only short previews of
+    user-role message content so we can see whether Tavo changed the payload.
+    """
+
+    messages = request_json.get("messages")
+
+    if not isinstance(messages, list):
+        print("[TAVO DEBUG] request has no messages list", flush=True)
+        return
+
+    print(
+        f"[TAVO DEBUG] raw message roles="
+        f"{[m.get('role') if isinstance(m, dict) else '?' for m in messages]}",
+        flush=True,
+    )
+
+    user_messages = [
+        (i, m)
+        for i, m in enumerate(messages)
+        if isinstance(m, dict) and m.get("role") == "user"
+    ]
+
+    for i, message in user_messages[-4:]:
+        content = message.get("content")
+        content_type = type(content).__name__
+
+        if isinstance(content, str):
+            preview = content
+
+        elif isinstance(content, list):
+            text_parts: list[str] = []
+
+            for block in content:
+                if isinstance(block, str):
+                    text_parts.append(block)
+                elif isinstance(block, dict):
+                    text = block.get("text")
+                    if isinstance(text, str):
+                        text_parts.append(text)
+
+            preview = "\n".join(text_parts)
+
+        else:
+            preview = repr(content)
+
+        preview = preview.replace("\r", "\\r").replace("\n", "\\n")
+        preview = preview[:700]
+
+        print(
+            f"[TAVO DEBUG] user[{i}] "
+            f"content_type={content_type} "
+            f"text={preview!r}",
+            flush=True,
+        )
 
 
 # JanitorAI routes
@@ -45,12 +96,13 @@ def handle():
         abort(400, "Bad Request. Missing or invalid JSON.")
         return
 
+    # Temporary diagnostics. No API key/header is printed.
+    _debug_raw_user_messages(request_json)
+
     request_path = request.path
 
     jai_req = JaiRequest.parse(request_json)
 
-    # Quiet mode works both for old Janitor route
-    # and the new /v1/quiet/... alias
     jai_req.quiet = "/quiet/" in request_path
 
     proxy_test = is_proxy_test(request_json)
@@ -60,8 +112,6 @@ def handle():
         wrap_errors=proxy_test,
     )
 
-    # JanitorAI and OpenAI-compatible clients send the API key as:
-    # Authorization: Bearer <API_KEY>
     request_auth = request.headers.get("authorization", "").split(" ", maxsplit=1)
 
     if len(request_auth) != 2 or request_auth[0].lower() != "bearer":
@@ -82,7 +132,6 @@ def handle():
         xuid,
     )
 
-    # Cheap rate limiting
     if (
         (seconds := user.last_seen())
         and (cooldown := get_cooldown())
@@ -98,7 +147,6 @@ def handle():
             429,
         )
 
-    # Rotate multiple API keys if several keys are supplied
     rcounter = user.get_rcounter()
 
     api_key_index = rcounter % len(api_keys)
@@ -107,9 +155,6 @@ def handle():
 
     selected_api_key = api_keys[api_key_index]
 
-    # A raw Mistral Studio key has no reliable provider-specific prefix.
-    # Infer Mistral only when this request contains a single Mistral provider.
-    # Multi-provider setups can still use explicit `mistral/<key>` syntax.
     if set(jai_req.models) == {"mistral"} and "/" not in selected_api_key:
         selected_api_key = f"mistral/{selected_api_key}"
 
