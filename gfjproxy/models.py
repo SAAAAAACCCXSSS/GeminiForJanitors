@@ -40,6 +40,18 @@ def _parse_user_text(text: str) -> tuple[list[Command], str]:
 
     stripped = text.strip()
 
+    # Tavo may intercept native // slash commands before they ever reach GFJ.
+    # Support an alternate transport prefix for Tavo:
+    #
+    #   !!aboutme
+    #   !!btrick on
+    #   !!fixturns on
+    #
+    # The proxy converts !! -> // only for messages that START with !!,
+    # so ordinary prose containing exclamation marks is unaffected.
+    if stripped.startswith("!!"):
+        stripped = stripped.replace("!!", "//")
+
     if not stripped.startswith("//"):
         # Keep ordinary user text untouched apart from outer whitespace.
         return [], stripped
