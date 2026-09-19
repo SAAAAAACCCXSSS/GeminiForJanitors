@@ -19,6 +19,56 @@ PROVIDER_FUNCS["cloudflare"] = cloudflare_generate_content
 PROVIDER_FUNCS["mistral"] = mistral_generate_content
 
 
+def _looks_like_tavo(request_json: dict) -> bool:
+    """Detect Tavo even if it strips/rewrites the API URL path.
+
+    Tavo's generated prompt contains distinctive latest-turn wrapper markers.
+    We inspect only message content; no API keys or headers are involved.
+    """
+
+    messages = request_json.get("messages")
+
+    if not isinstance(messages, list):
+        return False
+
+    markers = (
+        "== start of latest Human turn ==",
+        "== end of latest Human turn ==",
+        "<latest_user_turn>",
+        "<rp_phone_context>",
+    )
+
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+
+        content = message.get("content")
+
+        if isinstance(content, str):
+            haystack = content
+
+        elif isinstance(content, list):
+            parts: list[str] = []
+
+            for block in content:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict):
+                    block_text = block.get("text")
+                    if isinstance(block_text, str):
+                        parts.append(block_text)
+
+            haystack = "\n".join(parts)
+
+        else:
+            continue
+
+        if any(marker in haystack for marker in markers):
+            return True
+
+    return False
+
+
 def _debug_raw_user_messages(request_json: dict) -> None:
     """Temporary safe diagnostic for Tavo/Janitor request shapes.
 
@@ -112,7 +162,20 @@ def handle():
     _debug_raw_user_messages(request_json)
 
     request_path = request.path
-    is_tavo = request_path.startswith("/tavo")
+
+    # Do not rely on Tavo preserving "/tavo" in the configured API URL.
+    # Some frontend versions normalize the endpoint and still POST to
+    # /chat/completions. Detect Tavo from its request payload as well.
+    is_tavo = (
+        request_path.startswith("/tavo")
+        or _looks_like_tavo(request_json)
+    )
+
+    if is_tavo:
+        print(
+            f"[TAVO DEBUG] detected Tavo request on path {request_path!r}",
+            flush=True,
+        )
 
     jai_req = JaiRequest.parse(request_json)
 
