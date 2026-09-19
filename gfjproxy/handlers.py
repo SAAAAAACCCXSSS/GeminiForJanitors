@@ -400,17 +400,56 @@ def handle_chat_message(
         jai_req,
     )
 
-    # Tavo/OpenAI-compatible clients can append system/assistant turns around
-    # the actual user turn. Always use the newest real user-role message as the
-    # command source instead of assuming it is last or second-last.
-    last_user_message = next(
-        (
-            message
-            for message in reversed(jai_req.messages)
-            if message.role == "user"
-        ),
-        jai_req.messages[-1],
-    )
+    # Tavo wraps the real current Human turn between explicit marker messages:
+    #   == start of latest Human turn ==
+    #   ...
+    #   == end of latest Human turn ==
+    #
+    # Plugin-generated user-role blocks may appear after the user's actual text.
+    # Therefore "take the last user-role message" is not reliable.
+    #
+    # Prefer a command-bearing user message INSIDE the latest-Human-turn window.
+    # This avoids both:
+    #   1) missing the current command because a plugin block comes after it;
+    #   2) re-running an old command that remains in chat history.
+    start_marker = "== start of latest Human turn =="
+    end_marker = "== end of latest Human turn =="
+
+    start_index = -1
+    end_index = len(jai_req.messages)
+
+    for index, message in enumerate(jai_req.messages):
+        if message.role != "user":
+            continue
+
+        marker_text = _message_text(message.content).strip()
+
+        if marker_text == start_marker:
+            start_index = index
+        elif marker_text == end_marker and start_index != -1 and index > start_index:
+            end_index = index
+
+    last_user_message = None
+
+    if start_index != -1:
+        for message in reversed(
+            jai_req.messages[start_index + 1 : end_index]
+        ):
+            if message.role == "user" and message.commands:
+                last_user_message = message
+                break
+
+    # JanitorAI does not use Tavo's latest-turn wrapper.
+    # Also keep a safe fallback for Tavo requests that contain no proxy command.
+    if last_user_message is None:
+        last_user_message = next(
+            (
+                message
+                for message in reversed(jai_req.messages)
+                if message.role == "user"
+            ),
+            jai_req.messages[-1],
+        )
 
     if jai_req.messages[-1].role == "assistant":
         xlog(
@@ -418,13 +457,12 @@ def handle_chat_message(
             "User set prefill detected",
         )
 
-    # Diagnostic line: if Tavo ever breaks again, Render Logs will show exactly
-    # which commands were parsed from the selected user turn.
     xlog(
         user,
         "Selected command source "
         f"role={last_user_message.role!r}, "
-        f"commands={[(c.name, c.args) for c in last_user_message.commands]!r}",
+        f"commands={[(c.name, c.args) for c in last_user_message.commands]!r}, "
+        f"tavo_window=({start_index}, {end_index})",
     )
 
     last_user_text = _message_text(
