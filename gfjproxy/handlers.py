@@ -400,48 +400,48 @@ def handle_chat_message(
         jai_req,
     )
 
-    # Tavo wraps the real current Human turn between explicit marker messages:
-    #   == start of latest Human turn ==
-    #   ...
-    #   == end of latest Human turn ==
+    # Tavo 1.3.x can merge the entire "latest Human turn" wrapper and all
+    # plugin context into ONE user-role message, instead of sending the
+    # start/end markers as separate messages.
     #
-    # Plugin-generated user-role blocks may appear after the user's actual text.
-    # Therefore "take the last user-role message" is not reliable.
+    # Example:
+    #   user:
+    #     == start of latest Human turn ==
+    #     ... plugin context ...
+    #     <latest_user_turn>
+    #     //aboutme
+    #     </latest_user_turn>
+    #     == end of latest Human turn ==
     #
-    # Prefer a command-bearing user message INSIDE the latest-Human-turn window.
-    # This avoids both:
-    #   1) missing the current command because a plugin block comes after it;
-    #   2) re-running an old command that remains in chat history.
+    # Therefore marker equality is NOT reliable. Find the newest user message
+    # that CONTAINS the latest-turn marker and use that exact message as the
+    # command source. This also prevents an old //aboutme from chat history
+    # being executed again on later normal RP turns.
     start_marker = "== start of latest Human turn =="
     end_marker = "== end of latest Human turn =="
 
-    start_index = -1
-    end_index = len(jai_req.messages)
+    tavo_turn_message = None
+    tavo_turn_index = -1
 
     for index, message in enumerate(jai_req.messages):
         if message.role != "user":
             continue
 
-        marker_text = _message_text(message.content).strip()
+        message_text = _message_text(message.content)
 
-        if marker_text == start_marker:
-            start_index = index
-        elif marker_text == end_marker and start_index != -1 and index > start_index:
-            end_index = index
+        if start_marker in message_text:
+            tavo_turn_message = message
+            tavo_turn_index = index
 
-    last_user_message = None
-
-    if start_index != -1:
-        for message in reversed(
-            jai_req.messages[start_index + 1 : end_index]
-        ):
-            if message.role == "user" and message.commands:
-                last_user_message = message
-                break
-
-    # JanitorAI does not use Tavo's latest-turn wrapper.
-    # Also keep a safe fallback for Tavo requests that contain no proxy command.
-    if last_user_message is None:
+    if tavo_turn_message is not None:
+        last_user_message = tavo_turn_message
+        xlog(
+            user,
+            "Tavo merged latest-turn message detected "
+            f"at index {tavo_turn_index}",
+        )
+    else:
+        # JanitorAI and older/simple clients: use the newest actual user turn.
         last_user_message = next(
             (
                 message
@@ -462,7 +462,7 @@ def handle_chat_message(
         "Selected command source "
         f"role={last_user_message.role!r}, "
         f"commands={[(c.name, c.args) for c in last_user_message.commands]!r}, "
-        f"tavo_window=({start_index}, {end_index})",
+        f"tavo_turn_index={tavo_turn_index}",
     )
 
     last_user_text = _message_text(
