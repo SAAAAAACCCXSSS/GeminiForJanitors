@@ -400,13 +400,32 @@ def handle_chat_message(
         jai_req,
     )
 
-    last_user_message = jai_req.messages[-1]
+    # Tavo/OpenAI-compatible clients can append system/assistant turns around
+    # the actual user turn. Always use the newest real user-role message as the
+    # command source instead of assuming it is last or second-last.
+    last_user_message = next(
+        (
+            message
+            for message in reversed(jai_req.messages)
+            if message.role == "user"
+        ),
+        jai_req.messages[-1],
+    )
 
     if jai_req.messages[-1].role == "assistant":
-        xlog(user, "User set prefill detected")
+        xlog(
+            user,
+            "User set prefill detected",
+        )
 
-        if len(jai_req.messages) >= 2:
-            last_user_message = jai_req.messages[-2]
+    # Diagnostic line: if Tavo ever breaks again, Render Logs will show exactly
+    # which commands were parsed from the selected user turn.
+    xlog(
+        user,
+        "Selected command source "
+        f"role={last_user_message.role!r}, "
+        f"commands={[(c.name, c.args) for c in last_user_message.commands]!r}",
+    )
 
     last_user_text = _message_text(
         last_user_message.content,
