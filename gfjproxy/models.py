@@ -2,6 +2,7 @@
 
 The name of some fields in here may not match with the source they are from."""
 
+import re
 from dataclasses import dataclass, field
 from json import loads
 
@@ -18,70 +19,87 @@ _COMMAND_SPACE_TRANSLATION = str.maketrans(
         "\u2007": " ",  # FIGURE SPACE
         "\u202f": " ",  # NARROW NO-BREAK SPACE
         "\u200b": "",   # ZERO WIDTH SPACE
-        "\ufeff": "",   # ZERO WIDTH NO-BREAK SPACE / BOM
+        "\ufeff": "",   # BOM / ZERO WIDTH NO-BREAK SPACE
         "\u2060": "",   # WORD JOINER
     }
 )
 
+# Some frontends can serialize a user turn as:
+#   Anna: //aboutme
+# instead of sending only:
+#   //aboutme
+#
+# Only treat a speaker prefix specially when what follows it is a command.
+_SPEAKER_COMMAND_PREFIX = re.compile(
+    r"^[^:\n]{1,80}:\s*(?=(?://|!!))"
+)
+
 
 def _parse_user_text(text: str) -> tuple[list[Command], str]:
-    """Parse proxy commands only when the user text actually starts with //.
+    """Parse GFJ commands safely from a user-role text message.
 
-    This avoids treating documentation/system text that merely mentions
-    //btrick, //fixturns, etc. as executable commands.
+    Supported forms:
+        //aboutme
+        //btrick on
+        !!aboutme
+        !!btrick on
+        Anna: //aboutme
+        Anna: !!btrick on
 
-    Tavo and some OpenAI-compatible frontends may also introduce visually
-    invisible Unicode spacing characters, so command-leading text is normalized
-    before it reaches the legacy command parser.
+    Commands are recognized only at the beginning of a line (optionally after
+    a simple "speaker:" prefix). This prevents long Tavo prompt text that merely
+    mentions //btrick or //fixturns from being executed accidentally.
     """
 
     if not isinstance(text, str):
         return [], str(text)
 
-    stripped = text.strip()
+    original = text.strip()
+    normalized = original.translate(_COMMAND_SPACE_TRANSLATION)
 
-    # Tavo may intercept native // slash commands before they ever reach GFJ.
-    # Support an alternate transport prefix for Tavo:
-    #
-    #   !!aboutme
-    #   !!btrick on
-    #   !!fixturns on
-    #
-    # The proxy converts !! -> // only for messages that START with !!,
-    # so ordinary prose containing exclamation marks is unaffected.
-    if stripped.startswith("!!"):
-        stripped = stripped.replace("!!", "//")
+    commands: list[Command] = []
+    kept_lines: list[str] = []
 
-    if not stripped.startswith("//"):
-        # Keep ordinary user text untouched apart from outer whitespace.
-        return [], stripped
+    for raw_line in normalized.splitlines() or [normalized]:
+        candidate = raw_line.strip()
 
-    normalized = stripped.translate(_COMMAND_SPACE_TRANSLATION)
-    return parse_message(normalized)
+        prefix_match = _SPEAKER_COMMAND_PREFIX.match(candidate)
+        if prefix_match:
+            candidate = candidate[prefix_match.end():].lstrip()
+
+        if candidate.startswith("!!"):
+            candidate = "//" + candidate[2:]
+
+        if candidate.startswith("//"):
+            parsed_commands, clean_text = parse_message(candidate)
+
+            if parsed_commands:
+                commands.extend(parsed_commands)
+
+                # Preserve any ordinary residual text that followed commands.
+                if clean_text:
+                    kept_lines.append(clean_text)
+
+                continue
+
+        kept_lines.append(raw_line)
+
+    if commands:
+        return commands, "\n".join(kept_lines).strip()
+
+    return [], original
 
 
 def _parse_structured_content(
     role: str,
     content: list,
 ) -> tuple[list[Command], list]:
-    """Parse OpenAI/Tavo structured message content without dropping images.
-
-    Tavo may send:
-        [
-            {"type": "text", "text": "..."},
-            {"type": "image_url", "image_url": {"url": "..."}}
-        ]
-
-    The old compatibility code preserved the list but never ran parse_message()
-    for its text blocks, which meant proxy commands could silently stop working
-    for Tavo while continuing to work in JanitorAI.
-    """
+    """Parse OpenAI/Tavo structured content while preserving non-text blocks."""
 
     commands: list[Command] = []
     parsed_content: list = []
 
     for block in content:
-        # Be tolerant of string items in a structured array.
         if isinstance(block, str):
             if role == "user":
                 block_commands, clean_text = _parse_user_text(block)
@@ -106,7 +124,8 @@ def _parse_structured_content(
             else:
                 new_block["text"] = strip_message(text)
 
-        # Image/audio/other blocks are kept exactly as they were.
+        # image_url / input_image / inline data and every other non-text field
+        # are preserved untouched.
         parsed_content.append(new_block)
 
     return commands, parsed_content
@@ -139,7 +158,6 @@ class JaiMessage:
 
         content = data.get("content")
 
-        # OpenAI/Tavo structured or multimodal message.
         if isinstance(content, list):
             jai_msg.commands, jai_msg.content = _parse_structured_content(
                 jai_msg.role,
@@ -242,7 +260,6 @@ class JaiRequest:
                     jai_req.models["mistral"] = model
 
                 else:
-                    # Build a comma-separated list of unknown models
                     if unknown := jai_req.models.get("unknown"):
                         jai_req.models["unknown"] = (
                             f"{unknown}, {model}"
