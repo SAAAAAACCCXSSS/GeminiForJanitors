@@ -2,7 +2,6 @@ import re
 from random import randint
 from typing import Any, cast
 
-from ._globals import BANNER, BANNER_VERSION
 from .commands import CommandError, CommandExit
 from .logging import xlog
 from .models import JaiMessage, JaiRequest, JaiResult, JaiResultMetadata
@@ -1157,25 +1156,6 @@ def handle_chat_message(
         xlog(
             user,
             " - No usage metadata",
-        )
-
-    if (
-        not jai_req.quiet
-        and user.do_show_banner(
-            BANNER_VERSION
-        )
-    ):
-        xlog(
-            user,
-            (
-                f"Showing"
-                f"{' new ' if not user.exists else ' '}"
-                f"user the latest banner"
-            ),
-        )
-
-        response.add_message(
-            BANNER,
         )
 
     track_stats(
