@@ -22,8 +22,7 @@ PROVIDER_FUNCS["mistral"] = mistral_generate_content
 def _debug_raw_user_messages(request_json: dict) -> None:
     """Temporary safe diagnostic for Tavo/Janitor request shapes.
 
-    Does NOT log Authorization/API keys. It prints only short previews of
-    user-role message content so we can see whether Tavo changed the payload.
+    Does NOT log Authorization/API keys.
     """
 
     messages = request_json.get("messages")
@@ -59,6 +58,7 @@ def _debug_raw_user_messages(request_json: dict) -> None:
                     text_parts.append(block)
                 elif isinstance(block, dict):
                     text = block.get("text")
+
                     if isinstance(text, str):
                         text_parts.append(text)
 
@@ -78,15 +78,28 @@ def _debug_raw_user_messages(request_json: dict) -> None:
         )
 
 
-# JanitorAI routes
+# Standard JanitorAI / existing routes.
 @proxy.route("/", methods=["POST"])
 @proxy.route("/chat/completions", methods=["POST"])
 @proxy.route("/quiet/", methods=["POST"])
 @proxy.route("/quiet/chat/completions", methods=["POST"])
-
-# OpenAI-compatible routes for Tavo / SillyTavern / other frontends
 @proxy.route("/v1/chat/completions", methods=["POST"])
 @proxy.route("/v1/quiet/chat/completions", methods=["POST"])
+
+# Dedicated Tavo routes.
+#
+# Set Tavo's API URL to:
+#   https://YOUR-SERVICE.onrender.com/tavo
+#
+# If Tavo appends /chat/completions or /v1/chat/completions, both variants
+# are supported. JanitorAI can keep using the old root URL unchanged.
+@proxy.route("/tavo", methods=["POST"])
+@proxy.route("/tavo/", methods=["POST"])
+@proxy.route("/tavo/chat/completions", methods=["POST"])
+@proxy.route("/tavo/v1/chat/completions", methods=["POST"])
+@proxy.route("/tavo/quiet/", methods=["POST"])
+@proxy.route("/tavo/quiet/chat/completions", methods=["POST"])
+@proxy.route("/tavo/v1/quiet/chat/completions", methods=["POST"])
 def handle():
     assert storage is not None
 
@@ -96,10 +109,10 @@ def handle():
         abort(400, "Bad Request. Missing or invalid JSON.")
         return
 
-    # Temporary diagnostics. No API key/header is printed.
     _debug_raw_user_messages(request_json)
 
     request_path = request.path
+    is_tavo = request_path.startswith("/tavo")
 
     jai_req = JaiRequest.parse(request_json)
 
@@ -110,6 +123,7 @@ def handle():
     response = ResponseHelper(
         use_stream=jai_req.stream,
         wrap_errors=proxy_test,
+        plain_proxy_messages=is_tavo,
     )
 
     request_auth = request.headers.get("authorization", "").split(" ", maxsplit=1)
@@ -171,6 +185,9 @@ def handle():
         log_details.append(
             f"Key {api_key_index + 1}/{len(api_keys)}"
         )
+
+    if is_tavo:
+        log_details.append("Tavo endpoint")
 
     ref_time = xlogtime(
         user,
