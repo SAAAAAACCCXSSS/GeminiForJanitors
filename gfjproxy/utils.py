@@ -38,17 +38,28 @@ class ResponseMessage:
 
 
 class ResponseHelper:
-    """Response helper to provide JanitorAI with valid responses."""
+    """Response helper to provide JanitorAI/OpenAI-compatible clients with valid responses."""
 
     # U+200B ZERO WIDTH SPACE
     PROXY_TAG_OPEN = "\u200b<proxy>\n"
     PROXY_TAG_CLOSE = "\n\u200b</proxy>"
 
-    def __init__(self, *, use_stream: bool = False, wrap_errors: bool = False):
+    def __init__(
+        self,
+        *,
+        use_stream: bool = False,
+        wrap_errors: bool = False,
+        plain_proxy_messages: bool = False,
+    ):
         self._messages = []
         self._status = 200
         self._use_stream = use_stream
         self._wrap_errors = wrap_errors
+        # Tavo 1.3.x may treat a response containing only <proxy>...</proxy>
+        # as effectively empty and immediately continue with a normal model
+        # generation. On the dedicated /tavo endpoint, expose proxy messages
+        # as ordinary assistant text instead.
+        self._plain_proxy_messages = plain_proxy_messages
 
     def add_error(self, message, status_code: int):
         self._messages.append(
@@ -77,21 +88,6 @@ class ResponseHelper:
 
     def build(self) -> Response:
         if self._status != 200:
-            # If the upstream/provider request failed, always return
-            # a real HTTP error even if proxy/command messages were
-            # queued before the provider request.
-            #
-            # Without this, something like:
-            #
-            #   "Braille Trick enabled..."
-            #   + Google AI 503
-            #
-            # becomes a normal HTTP 200 assistant response and JanitorAI
-            # saves the error as a chat message.
-            #
-            # On failure, command/proxy acknowledgements are discarded
-            # and only actual ERROR messages are returned.
-
             error_messages = [
                 message
                 for message in self._messages
@@ -184,10 +180,20 @@ class ResponseHelper:
         if len(self._messages) == 1:
             if self._messages[0].kind == MessageKind.CHAT:
                 return self._messages[0].text
+
             if self._messages[0].kind == MessageKind.ERROR:
                 if self._wrap_errors:
-                    return f"PROXY ERROR {self._messages[0].status_code}: {self._messages[0].text}"
+                    return (
+                        f"PROXY ERROR {self._messages[0].status_code}: "
+                        f"{self._messages[0].text}"
+                    )
                 return self._messages[0].text
+
+            # Dedicated Tavo endpoint:
+            # return command/proxy-only text as a normal assistant payload.
+            if self._plain_proxy_messages:
+                return self._messages[0].text
+
             return f"{proxy_open}{self._messages[0].text}{proxy_close}"
 
         def do_wrap_proxy(msg):
@@ -198,18 +204,31 @@ class ResponseHelper:
         for wrap_proxy, msg_group in groupby(self._messages, do_wrap_proxy):
             if wrap_proxy:
                 content = []
+
                 for msg in msg_group:
                     if msg.kind == MessageKind.ERROR:
                         if msg.text.startswith("Error from"):
                             text = msg.text
                         else:
                             text = f"Error {msg.status_code}: {msg.text}"
-                    else:  # PROXY message
+                    else:
                         text = msg.text
+
                     content.append(text)
-                result.append(f"{proxy_open}{'\n'.join(content)}{proxy_close}")
-            else:  # CHAT messages
-                result.append("\n".join(msg.text for msg in msg_group))
+
+                joined = "\n".join(content)
+
+                if self._plain_proxy_messages:
+                    result.append(joined)
+                else:
+                    result.append(
+                        f"{proxy_open}{joined}{proxy_close}"
+                    )
+
+            else:
+                result.append(
+                    "\n".join(msg.text for msg in msg_group)
+                )
 
         return "\n".join(result)
 
@@ -230,31 +249,18 @@ class ResponseHelper:
 
 
 def is_proxy_test(request_json: dict) -> bool:
-    # A normal chat request has 2 or more messages and the first one always has
-    # "role" set to "system" (this being the bot description). Meanwhile, a
-    # proxy test request looks like this:
-    #   {
-    #     "max_tokens": 10,
-    #     "messages": [{"content": "Just say TEST", "role": "user"}],
-    #     "model": "gemini-2.5-pro",
-    #     "temperature": 0
-    #   }
-    # We need to inspect the "messages" key. Everything else can vary.
-    # A false negative will lead the request down the regular chat path, which
-    # isn't really a big deal, considering the error feedback UI will only fail
-    # to display any proxy errors and will show something else instead.
-
     messages = request_json.get("messages")
+
     if isinstance(messages, list) and len(messages) == 1:
         message = messages[0]
+
         if isinstance(message, dict):
             text = message.get("content")
             role = message.get("role")
+
             if text == "Just say TEST" and role == "user":
-                # Yep, looks like a proxy test
                 return True
 
-    # Most likely not a proxy test request
     return False
 
 
@@ -293,54 +299,41 @@ def _runner(cloudflared: str):
     for _ in range(10):
         try:
             metrics = http_client.get("http://127.0.0.1:5001/metrics").text
+
             if match := pattern.search(metrics):
                 url = match.group("url")
                 xlog(None, f"Cloudflared tunnel on {url}")
                 return
             else:
                 xlog(None, "Pattern search returned no match")
+
         except HTTPError:
             time.sleep(1)
+
     xlog(None, "Couldn't get cloudflared tunnel")
 
 
 def run_cloudflared(cloudflared: str):
-    runner_thread = threading.Thread(target=_runner, args=(cloudflared,), daemon=True)
+    runner_thread = threading.Thread(
+        target=_runner,
+        args=(cloudflared,),
+        daemon=True,
+    )
     runner_thread.start()
 
 
 ################################################################################
 
 
-# https://github.com/googleapis/google-cloud-python/blob/b9466f9c85c94331ffc39e1da3cf98fb5ff7d612/packages/google-auth/google/auth/_helpers.py#L111
 def utcnow() -> datetime.datetime:
-    """Returns the current UTC datetime.
-
-    Returns:
-        datetime: The current time in UTC.
-    """
     return datetime.datetime.now(datetime.UTC)
 
 
-# https://github.com/googleapis/google-cloud-python/blob/b9466f9c85c94331ffc39e1da3cf98fb5ff7d612/packages/google-auth/google/auth/_helpers.py#L127
 def utcfromtimestamp(timestamp: float) -> datetime.datetime:
-    """Returns the UTC datetime.
-
-    Args:
-        timestamp (float): The timestamp, in fractional seconds, to convert.
-
-    Returns:
-        datetime: The current UTC datetime.
-    """
     return datetime.datetime.fromtimestamp(timestamp, tz=datetime.UTC)
 
 
 def utctimestamp() -> float:
-    """Returns the current UTC timestamp.
-
-    Returns:
-        float: The current time in UTC in fractional seconds.
-    """
     return time.time()
 
 
@@ -359,6 +352,7 @@ def base64url_decode(input: str | bytes) -> bytes:
         input = input.encode("utf-8")
 
     padding = len(input) % 4
+
     if padding > 0 and not input.endswith(b"="):
         input += b"=" * (4 - padding)
 
