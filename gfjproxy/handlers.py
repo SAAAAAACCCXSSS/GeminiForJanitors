@@ -242,6 +242,7 @@ def handle_chat_message(
 
     command_exit = False
     command_exit_list: list[str] = []
+    command_error = False
 
     for command in last_user_message.commands:
         xlog(user, f"//{command.name} {command.args}")
@@ -250,12 +251,16 @@ def handle_chat_message(
             response = cast(ResponseHelper, command(user, jai_req, response))
         except CommandError as e:
             message = f"Error: {e} (Command has been ignored.)"
-            response.add_proxy_message(message)
+            response.add_error(message, 400)
+            command_error = True
             xlog(user, message)
         except CommandExit:
             xlog(user, "Command exit set")
             command_exit = True
             command_exit_list.append(command.name)
+
+    if command_error:
+        return response
 
     if command_exit:
         command_exit_list_str = ", ".join(f"//{c}" for c in command_exit_list)

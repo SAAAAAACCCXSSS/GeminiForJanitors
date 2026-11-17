@@ -6,18 +6,16 @@ Hashing an API key with a secret salt gives an unique user ID for program use.
 """
 
 import json
-from contextlib import contextmanager
+from copy import deepcopy
 from hashlib import sha256
 from hmac import digest
-from threading import Lock, local
-from time import monotonic, sleep
+from threading import Lock
 
 import redis
 import redis.exceptions
 import redis.lock
 from colorama.ansi import Fore as _colorama_ansi_fore
 
-from ._globals import PROCESS_TIMEOUT
 from .utils import base64url_encode, utctimestamp
 
 _color_palette = [
@@ -131,6 +129,10 @@ class UserStorage:
         """Puts the user data into the storage, overwriting any old data."""
         raise NotImplementedError("UserStorage.put")
 
+    def update(self, xuid: XUID, transform) -> dict:
+        """Atomically transform stored settings; never hold this across generation."""
+        raise NotImplementedError("UserStorage.update")
+
     def rem(self, xuid: XUID):
         """Removes the user and their data from the storage.
         Raises a KeyError if the user is not present on the storage."""
@@ -144,21 +146,6 @@ class UserStorage:
     def unlock(self, xuid: XUID):
         """Unlocks the storage and allow future access."""
         raise NotImplementedError("UserStorage.unlock")
-
-    @contextmanager
-    def request_lock(self, xuid: XUID, *, timeout: float):
-        """Wait for the previous request, then release ownership on every exit."""
-        deadline = monotonic() + timeout
-        while not self.lock(xuid):
-            remaining = deadline - monotonic()
-            if remaining <= 0:
-                yield False
-                return
-            sleep(min(0.1, remaining))
-        try:
-            yield True
-        finally:
-            self.unlock(xuid)
 
     def keyring_get(self, key: str) -> str | None:
         """Gets raw data from the keyring.
@@ -183,6 +170,7 @@ class LocalUserStorage(UserStorage):
         self._storage: dict[XUID, dict] = {}
         self._keyring: dict[str, str] = {}
         self._locks: dict[str, Lock] = {}
+        self._write_lock = Lock()
 
     def active(self) -> bool:
         return True
@@ -212,14 +200,21 @@ class LocalUserStorage(UserStorage):
     def rem(self, xuid: XUID):
         del self._storage[xuid]
 
+    def update(self, xuid: XUID, transform) -> dict:
+        with self._write_lock:
+            current, _ = self.get(xuid)
+            updated = transform(deepcopy(current))
+            self.put(xuid, updated)
+            return deepcopy(updated)
+
     def lock(self, xuid: XUID) -> bool:
         lockid = xuid.lockid()
-        return self._locks.setdefault(lockid, Lock()).acquire(blocking=False)
+        if lockid not in self._locks:
+            self._locks[lockid] = Lock()
+        return self._locks[lockid].acquire(blocking=False)
 
     def unlock(self, xuid: XUID):
-        # Keep the handle stable: another waiter may already hold a reference
-        # to it when the current request releases ownership.
-        if lock := self._locks.get(xuid.lockid()):
+        if lock := self._locks.pop(xuid.lockid(), None):
             lock.release()
 
     def keyring_get(self, key: str) -> str | None:
@@ -243,9 +238,7 @@ class RedisUserStorage(UserStorage):
     EXPIRY_TIME_IN_SECONDS = 30 * 24 * 60 * 60  # Arbitrary
 
     def __init__(self, url: str = DEFAULT_URL, timeout: float = 30):
-        # An expired request must not pop or release a later owner's handle.
-        # In production gevent patches threading.local to be greenlet-local.
-        self._locks = local()
+        self._locks: dict[str, redis.lock.Lock] = {}
         self._client = redis.from_url(
             url, socket_timeout=timeout, socket_connect_timeout=timeout
         )
@@ -283,20 +276,27 @@ class RedisUserStorage(UserStorage):
         if self._client.delete(repr(xuid)) == 0:
             raise KeyError(repr(xuid))
 
+    def update(self, xuid: XUID, transform) -> dict:
+        name = repr(xuid)
+
+        def apply(pipe):
+            raw = pipe.get(name)
+            current = json.loads(raw) if raw else {}
+            updated = transform(current)
+            pipe.multi()
+            pipe.set(name, json.dumps(updated))
+            return updated
+
+        return self._client.transaction(apply, name, value_from_callable=True)
+
     def lock(self, xuid: XUID) -> bool:
         lockid = xuid.lockid()
-        if not hasattr(self._locks, "owned"):
-            self._locks.owned = {}
-        if lockid in self._locks.owned:
-            return False
-        lock = self._client.lock(name=lockid, timeout=PROCESS_TIMEOUT + 30)
-        if not lock.acquire(blocking=False):
-            return False
-        self._locks.owned[lockid] = lock
-        return True
+        if lockid not in self._locks:
+            self._locks[lockid] = self._client.lock(name=lockid, timeout=60)
+        return self._locks[lockid].acquire(blocking=False)
 
     def unlock(self, xuid: XUID):
-        if lock := getattr(self._locks, "owned", {}).pop(xuid.lockid(), None):
+        if lock := self._locks.pop(xuid.lockid(), None):
             try:
                 lock.release()
             except redis.exceptions.LockNotOwnedError:
@@ -318,6 +318,40 @@ class RedisUserStorage(UserStorage):
 ################################################################################
 
 
+def _merge_settings(current: dict, original: dict, changed: dict, force=()) -> dict:
+    """Apply this snapshot's changes without replacing unrelated concurrent edits."""
+    result = deepcopy(current)
+    for key in original.keys() - changed.keys():
+        result.pop(key, None)
+    for key, value in changed.items():
+        if key in original and value == original[key] and key not in force:
+            continue
+        previous = original.get(key)
+        latest = result.get(key)
+        if isinstance(value, dict):
+            result[key] = _merge_settings(
+                latest if isinstance(latest, dict) else {},
+                previous if isinstance(previous, dict) else {},
+                value,
+            )
+        elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+            before = previous if isinstance(previous, list) else []
+            fresh = latest if isinstance(latest, list) else []
+            wanted = {item.casefold() for item in value}
+            removed = {item.casefold() for item in before} - wanted
+            merged = [item for item in fresh if item.casefold() not in removed]
+            added = {item.casefold() for item in before}
+            for item in value:
+                if item.casefold() not in added and item.casefold() not in {
+                    existing.casefold() for existing in merged
+                }:
+                    merged.append(item)
+            result[key] = merged
+        else:
+            result[key] = deepcopy(value)
+    return result
+
+
 class UserSettings:
     """User Settings manager class.
 
@@ -329,10 +363,12 @@ class UserSettings:
         self._storage = storage
         self._xuid = xuid
 
-        self._data, self._exists = self._storage.get(self._xuid)
+        data, self._exists = self._storage.get(self._xuid)
+        self._data = deepcopy(data)
+        self._original = deepcopy(data)
+        self._dirty: set[str] = set()
 
-        if not self._exists:
-            self._data["timestamp_first_seen"] = int(utctimestamp())
+        self._data.setdefault("timestamp_first_seen", int(utctimestamp()))
 
         self._data["version"] = 1
 
@@ -353,8 +389,22 @@ class UserSettings:
         return int(self._data.get("rcounter", 0))
 
     def inc_rcounter(self):
-        """Increases the user's request counter by one."""
-        self._data["rcounter"] = self.get_rcounter() + 1
+        """Reserve a unique request number before generation, including across workers."""
+
+        def increment(data):
+            data.setdefault("timestamp_first_seen", self._data["timestamp_first_seen"])
+            data["version"] = 1
+            data["rcounter"] = int(data.get("rcounter", 0)) + 1
+            return data
+
+        reserved = self._storage.update(self._xuid, increment)
+        for key in ("rcounter", "timestamp_first_seen", "version"):
+            self._data[key] = self._original[key] = reserved[key]
+        return reserved["rcounter"] - 1
+
+    def _set(self, key, value):
+        self._data[key] = value
+        self._dirty.add(key)
 
     #########################
 
@@ -364,7 +414,7 @@ class UserSettings:
 
     @use_fixturns.setter
     def use_fixturns(self, value):
-        self._data["use_fixturns"] = bool(value)
+        self._set("use_fixturns", bool(value))
 
     @property
     def use_btrick(self) -> bool:
@@ -372,7 +422,7 @@ class UserSettings:
 
     @use_btrick.setter
     def use_btrick(self, value):
-        self._data["use_btrick"] = bool(value)
+        self._set("use_btrick", bool(value))
 
     @property
     def use_dice_char(self) -> bool:
@@ -380,7 +430,7 @@ class UserSettings:
 
     @use_dice_char.setter
     def use_dice_char(self, value):
-        self._data["use_dice_char"] = bool(value)
+        self._set("use_dice_char", bool(value))
 
     @property
     def use_noass(self) -> bool:
@@ -388,7 +438,7 @@ class UserSettings:
 
     @use_noass.setter
     def use_noass(self, value):
-        self._data["use_noass"] = bool(value)
+        self._set("use_noass", bool(value))
 
     @property
     def use_nobot(self) -> bool:
@@ -396,7 +446,7 @@ class UserSettings:
 
     @use_nobot.setter
     def use_nobot(self, value):
-        self._data["use_nobot"] = bool(value)
+        self._set("use_nobot", bool(value))
 
     @property
     def use_ooctrick(self) -> bool:
@@ -404,7 +454,7 @@ class UserSettings:
 
     @use_ooctrick.setter
     def use_ooctrick(self, value):
-        self._data["use_ooctrick"] = bool(value)
+        self._set("use_ooctrick", bool(value))
 
     @property
     def use_prefill(self) -> bool:
@@ -412,7 +462,7 @@ class UserSettings:
 
     @use_prefill.setter
     def use_prefill(self, value):
-        self._data["use_prefill"] = bool(value)
+        self._set("use_prefill", bool(value))
 
     @property
     def use_search(self) -> bool:
@@ -420,7 +470,7 @@ class UserSettings:
 
     @use_search.setter
     def use_search(self, value):
-        self._data["use_search"] = bool(value)
+        self._set("use_search", bool(value))
 
     @property
     def use_think(self) -> bool:
@@ -428,7 +478,7 @@ class UserSettings:
 
     @use_think.setter
     def use_think(self, value):
-        self._data["use_think"] = bool(value)
+        self._set("use_think", bool(value))
 
     @property
     def use_rp(self) -> bool:
@@ -436,7 +486,7 @@ class UserSettings:
 
     @use_rp.setter
     def use_rp(self, value):
-        self._data["use_rp"] = bool(value)
+        self._set("use_rp", bool(value))
 
     @property
     def rp_settings(self) -> dict:
@@ -454,7 +504,7 @@ class UserSettings:
 
     @prefill_mode.setter
     def prefill_mode(self, value):
-        self._data["prefill_mode"] = int(value)
+        self._set("prefill_mode", int(value))
 
     @property
     def think_text(self) -> str:
@@ -462,7 +512,7 @@ class UserSettings:
 
     @think_text.setter
     def think_text(self, value):
-        self._data["think_text"] = str(value)
+        self._set("think_text", str(value))
 
     #########################
 
@@ -483,8 +533,18 @@ class UserSettings:
         return "not seen before"
 
     def save(self):
+        from .roleplay import _validate_state
+
         self._data["timestamp_last_seen"] = int(utctimestamp())
-        self._storage.put(self._xuid, self._data)
+
+        def merge(current):
+            updated = _merge_settings(current, self._original, self._data, self._dirty)
+            _validate_state(updated.get("rp_settings", {}))
+            return updated
+
+        self._data = self._storage.update(self._xuid, merge)
+        self._original = deepcopy(self._data)
+        self._dirty.clear()
 
     def do_show_banner(self, banner_version):
         last_seen_banner = self._data.get("banner", 0)
