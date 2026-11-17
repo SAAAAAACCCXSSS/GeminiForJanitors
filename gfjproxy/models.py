@@ -76,6 +76,11 @@ class JaiRequest:
     use_search: bool = False
     use_think: bool = False
     use_rp: bool = False
+    rp_enabled: bool | None = None
+    rp_state: dict | None = None
+    rp_tasks: list[str] = field(default_factory=list)
+    rp_status_only: bool = False
+    rp_generate: bool = False
 
     advsettings: dict[str, bool] = field(default_factory=dict)
 

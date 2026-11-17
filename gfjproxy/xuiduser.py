@@ -412,6 +412,14 @@ class UserSettings:
     def use_rp(self, value):
         self._data["use_rp"] = bool(value)
 
+    @property
+    def rp_settings(self) -> dict:
+        return self._data.get("rp_settings", {})
+
+    @rp_settings.setter
+    def rp_settings(self, value: dict):
+        self._data["rp_settings"] = value
+
     #########################
 
     @property

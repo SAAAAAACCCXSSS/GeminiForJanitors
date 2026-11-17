@@ -3,10 +3,12 @@
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from functools import wraps
+from functools import partial, wraps
 from random import randint
 
 from ._globals import BANNER, BANNER_VERSION, PRESETS
+from .roleplay import Directive, RoleplayError, execute, parse_directive, status_text
+from .rp_rules import command_help
 from .utils import ResponseHelper
 
 ################################################################################
@@ -57,6 +59,7 @@ class Command:
 
     # Pointer to command function
     func: Callable | None = field(default=None, repr=False, compare=False, kw_only=True)
+    narrative: bool = field(default=False, repr=False, compare=False, kw_only=True)
 
     # Prefer to this method instead of directly calling func
     def __call__(self, user, jai_req, response):
@@ -158,6 +161,7 @@ def aboutme(args, user, jai_req, response):
         ),
         f"This message is using API key {jai_req.api_key_index + 1} out of {jai_req.api_key_count}.",
     )
+    response.add_proxy_message(status_text(user, jai_req))
     raise CommandExit()
 
 
@@ -292,13 +296,10 @@ def think(args, user, jai_req, response):
     )
 
 
-@command(argspec=r"off|on|this", setting="rp")
+@command(argspec=r"off|on|this|status|reset")
 def rp(args, user, jai_req, response):
-    if jai_req.quiet_commands:
-        return response
-    return response.add_proxy_message(
-        f"Canonical RP mode {'enabled' if jai_req.use_rp else 'disabled'}"
-        + (" (for this message only)." if args == "this" else ".")
+    return _run_roleplay(
+        Directive("rp", args=args, value=args), args, user, jai_req, response
     )
 
 
@@ -474,8 +475,9 @@ Preset commands need to be called every time you want to use them.
 - `//think_text keep|remove`
   Configures the proxy to either include the model's thinking in the response or remove it entirely.
 
-- `//rp on|off|this`
+- `//rp on|off|this|status|reset`
   Applies canon-focused RP style rules to the character's system prompt. `on` persists across chats using the same primary API key; `this` is for one message.
+  Use `//help rp` for the complete COMMAND SYSTEM by dainsleifswife (cast, relationships, themes, formats and author directions).
 
 - `//nobot on|off|this`
   Removes the bot's description from the chat, in case it contains ToS-breaking content. *Note:* use this only as a last resort. This will negatively impact your chat.
@@ -687,6 +689,7 @@ You must add `z_ai/` at the start of any Z.AI API key.
 
 
 HELP = {
+    "rp": command_help(),
     "advsettings": HELP_ADVSETTINGS,
     "commands": HELP_COMMANDS,
     "dice": HELP_DICE,
@@ -702,7 +705,7 @@ def help(args, user, jai_req, response):
             args,
             (
                 f"There is no help topic `{args}`.\n"
-                + "Available topics are: `commands`, `dice`, `multikey`, `providers`."
+                + "Available topics are: `rp`, `commands`, `dice`, `multikey`, `providers`."
             ),
         )
     )
@@ -712,41 +715,60 @@ def help(args, user, jai_req, response):
 ################################################################################
 
 
+def _run_roleplay(directive, args, user, jai_req, response):
+    try:
+        return execute(directive, user, jai_req, response)
+    except RoleplayError as error:
+        raise CommandError(str(error)) from error
+
+
 def parse_message(message: str) -> tuple[list[Command], str]:
-    """Parse an message into a list of commands and the message's content."""
-
+    """Parse native RP and legacy commands in source order, preserving prose."""
     message = message.strip()
-
-    if "//" not in message:
-        # No commands to parse
-        return [], _stripmultispace(message)
-
-    commands = []
-    content = []
-
-    cmd_argcount = 0
-    prev_token = ""
-    for token in _tokenize(message):
-        if not cmd_argcount:
-            if prev_token.startswith("//") and (cmd := COMMANDS.get(token.lower())):
-                cmd_argcount = cmd["argcount"]
-                commands.append(Command(token, func=cmd["func"]))
-                content.pop()  # Remove "//" token
-            else:
-                content.append(token)
-        elif token.isspace():
-            continue  # Skip white space between a command and its arguments
-        elif token.isalnum():
-            cmd_argcount -= 1
-            commands[-1].args += token  # Valid argument
+    commands: list[Command] = []
+    content: list[str] = []
+    cursor = 0
+    for marker in re.finditer(r"/{2,}", message):
+        if marker.start() < cursor:
+            continue
+        # A URL and its path components are prose, not proxy commands.
+        token_start = (
+            max(
+                message.rfind(" ", 0, marker.start()),
+                message.rfind("\n", 0, marker.start()),
+                message.rfind("\t", 0, marker.start()),
+            )
+            + 1
+        )
+        prefix = message[token_start : marker.start()]
+        if prefix.endswith(":") or "://" in prefix:
+            continue
+        parsed = parse_directive(message, marker.end())
+        if parsed:
+            directive, end = parsed
+            commands.append(
+                Command(
+                    directive.name,
+                    directive.args,
+                    func=partial(_run_roleplay, directive),
+                    narrative=True,
+                )
+            )
         else:
-            # Invalid token means there was no valid or not enough arguments
-            cmd_argcount = 0  # Stop parsing
-            content.append(token)  # Add the token as if there wasn't a command
-            # The command function will show the appropriate error to the user
-
-        prev_token = token
-
+            match = re.match(r"[A-Za-z_]\w*", message[marker.end() :])
+            if not match or (entry := COMMANDS.get(match.group().lower())) is None:
+                continue
+            end = marker.end() + match.end()
+            args = ""
+            if entry["argcount"]:
+                argument = re.match(r"\s*([^\W_]+)", message[end:])
+                if argument:
+                    args = argument.group(1).lower()
+                    end += argument.end()
+            commands.append(Command(match.group().lower(), args, func=entry["func"]))
+        content.append(message[cursor : marker.start()])
+        cursor = end
+    content.append(message[cursor:])
     return commands, _stripmultispace("".join(content).strip())
 
 
