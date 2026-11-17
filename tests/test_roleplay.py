@@ -117,3 +117,22 @@ def test_rp_preserves_nobot_behavior(chat):
 def test_rp_help(chat):
     send, _ = chat
     assert "//rp on|off|this" in send("//help commands")[1]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_extended_rp_commands_work_through_http_without_chat_memory(chat, stream):
+    send, post = chat
+    assert "enabled" in send("//cochar active (Pantalone)", stream=stream)[1]
+    post.assert_not_called()
+    status, text = send("//love hidden [Pantalone] Continue.", stream=stream)
+    assert status == 200 and "Bot response." in text
+    request = post.call_args.kwargs["json"]
+    instruction = request["systemInstruction"]["parts"][0]["text"]
+    assert "MAIN CAST" in instruction and "Pantalone" in instruction
+    assert "Character [Pantalone]: Portray restrained" in instruction
+    assert request["contents"][-1]["parts"][0]["text"] == "Continue."
+    post.reset_mock()
+    assert "Main cast: Pantalone" in send("//rp status", stream=stream)[1]
+    post.assert_not_called()
+    assert "reset" in send("//rp reset", stream=stream)[1]
+    post.assert_not_called()
