@@ -5,6 +5,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 from .rp_rules import (
+    ADULT,
+    ADULT_OVERRIDE,
     ALIASES,
     COMMAND_NAMES,
     CORE_RULES,
@@ -79,7 +81,6 @@ def _group(text, pos):
                 depth -= 1
                 if not depth:
                     return text[pos + 1 : index].strip(), index + 1, ""
-    # Recover at the line boundary so a typo cannot swallow later commands.
     end = text.find("\n", pos)
     end = len(text) if end == -1 else end
     return "", end, f"Unclosed {opening}{closing} in command."
@@ -106,6 +107,13 @@ def parse_directive(text: str, pos: int) -> tuple[Directive, int] | None:
     elif name in {"interlude", "retcon", "boundaries"}:
         if value in OFF:
             directive.value, end = value, after_value
+    elif name == "18+":
+        directive.value, end = value, after_value
+        if value in ADULT:
+            second, after_second = _word(text, end)
+            if second in OFF:
+                directive.value = "nonactive"
+                end = after_second
     else:
         directive.value, end = value, after_value
         if name == "format" and value == "social":
@@ -113,7 +121,6 @@ def parse_directive(text: str, pos: int) -> tuple[Directive, int] | None:
             if second == "media":
                 directive.value, end = "social media", after_second
 
-    # Themes allow //angst theme and //angst theme off/this.
     if directive.value == "theme":
         action, after_action = _word(text, end)
         if action in ON | OFF:
@@ -363,6 +370,22 @@ def execute(d: Directive, user, jai_req, response):
         confirmation = f"{canonical} {'enabled' if value in ON else 'disabled'}."
         if canonical == "scenario select" and value in ON:
             jai_req.rp_generate = True
+    elif name == "18+":
+        if value not in ADULT and value not in OFF:
+            raise RoleplayError(
+                "//18+ accepts soft|active|extreme|filthy|hard|nonactive|off."
+            )
+        if d.payload:
+            raise RoleplayError("//18+ does not take a description.")
+        remove = value in OFF
+        _change(
+            user,
+            jai_req,
+            {key: None if remove else _entry(d)},
+            d.temporary,
+            enable=not remove,
+        )
+        confirmation = f"18+: {'off' if remove else value}."
     elif name in MODES:
         if value not in MODES[name].options and value not in OFF:
             raise RoleplayError(
@@ -494,7 +517,6 @@ def execute(d: Directive, user, jai_req, response):
             )
         d.payload = payload if value not in OFF else ""
         if name in {"memory", "retcon"}:
-            # Keep successive facts, with bounded storage and case-stable targets.
             prefix = _key(name, d.target) + " #"
             changes = (
                 {
@@ -608,6 +630,8 @@ def build_prompt(user, jai_req) -> str:
                 rule = MODES[name].options[value]
             elif name in TOGGLES:
                 rule = TOGGLES[name]
+            elif name in ADULT:
+                rule = ADULT[value]
             elif name == "love":
                 rule = LOVE[value]
                 if payload:
@@ -643,6 +667,8 @@ def build_prompt(user, jai_req) -> str:
             if target:
                 rule = f"Character [{target}]: {rule} Emotional directions concern their relationship to the user unless explicitly specified otherwise."
             lines.append(rule)
+        if any(key == "18+" or key.startswith("18+::") for key in _state(user, jai_req)):
+            lines.insert(0, ADULT_OVERRIDE)
     if jai_req.rp_tasks:
         lines.extend(jai_req.rp_tasks)
     return (
