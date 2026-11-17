@@ -6,15 +6,18 @@ Hashing an API key with a secret salt gives an unique user ID for program use.
 """
 
 import json
+from contextlib import contextmanager
 from hashlib import sha256
 from hmac import digest
-from threading import Lock
+from threading import Lock, local
+from time import monotonic, sleep
 
 import redis
 import redis.exceptions
 import redis.lock
 from colorama.ansi import Fore as _colorama_ansi_fore
 
+from ._globals import PROCESS_TIMEOUT
 from .utils import base64url_encode, utctimestamp
 
 _color_palette = [
@@ -142,6 +145,21 @@ class UserStorage:
         """Unlocks the storage and allow future access."""
         raise NotImplementedError("UserStorage.unlock")
 
+    @contextmanager
+    def request_lock(self, xuid: XUID, *, timeout: float):
+        """Wait for the previous request, then release ownership on every exit."""
+        deadline = monotonic() + timeout
+        while not self.lock(xuid):
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                yield False
+                return
+            sleep(min(0.1, remaining))
+        try:
+            yield True
+        finally:
+            self.unlock(xuid)
+
     def keyring_get(self, key: str) -> str | None:
         """Gets raw data from the keyring.
         Returns None if the key is not present on the keyring."""
@@ -196,12 +214,12 @@ class LocalUserStorage(UserStorage):
 
     def lock(self, xuid: XUID) -> bool:
         lockid = xuid.lockid()
-        if lockid not in self._locks:
-            self._locks[lockid] = Lock()
-        return self._locks[lockid].acquire(blocking=False)
+        return self._locks.setdefault(lockid, Lock()).acquire(blocking=False)
 
     def unlock(self, xuid: XUID):
-        if lock := self._locks.pop(xuid.lockid(), None):
+        # Keep the handle stable: another waiter may already hold a reference
+        # to it when the current request releases ownership.
+        if lock := self._locks.get(xuid.lockid()):
             lock.release()
 
     def keyring_get(self, key: str) -> str | None:
@@ -225,7 +243,9 @@ class RedisUserStorage(UserStorage):
     EXPIRY_TIME_IN_SECONDS = 30 * 24 * 60 * 60  # Arbitrary
 
     def __init__(self, url: str = DEFAULT_URL, timeout: float = 30):
-        self._locks: dict[str, redis.lock.Lock] = {}
+        # An expired request must not pop or release a later owner's handle.
+        # In production gevent patches threading.local to be greenlet-local.
+        self._locks = local()
         self._client = redis.from_url(
             url, socket_timeout=timeout, socket_connect_timeout=timeout
         )
@@ -265,12 +285,18 @@ class RedisUserStorage(UserStorage):
 
     def lock(self, xuid: XUID) -> bool:
         lockid = xuid.lockid()
-        if lockid not in self._locks:
-            self._locks[lockid] = self._client.lock(name=lockid, timeout=60)
-        return self._locks[lockid].acquire(blocking=False)
+        if not hasattr(self._locks, "owned"):
+            self._locks.owned = {}
+        if lockid in self._locks.owned:
+            return False
+        lock = self._client.lock(name=lockid, timeout=PROCESS_TIMEOUT + 30)
+        if not lock.acquire(blocking=False):
+            return False
+        self._locks.owned[lockid] = lock
+        return True
 
     def unlock(self, xuid: XUID):
-        if lock := self._locks.pop(xuid.lockid(), None):
+        if lock := getattr(self._locks, "owned", {}).pop(xuid.lockid(), None):
             try:
                 lock.release()
             except redis.exceptions.LockNotOwnedError:
