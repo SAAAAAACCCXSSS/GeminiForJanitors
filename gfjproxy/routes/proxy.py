@@ -2,11 +2,11 @@ from traceback import print_exception
 
 from flask import Blueprint, abort, request
 
-from .._globals import PROCESS_TIMEOUT
 from ..cooldown import get_cooldown
 from ..handlers import handle_chat_message, handle_proxy_test
 from ..logging import xlog, xlogtime
 from ..models import JaiRequest
+from ..roleplay import RoleplayError
 from ..storage import storage
 from ..utils import ResponseHelper, comma_split, is_proxy_test
 from ..xuid_secret import xuid_secret
@@ -47,26 +47,22 @@ def handle():
     xuid = XUID(api_keys[0], xuid_secret)
 
     try:
-        with storage.request_lock(xuid, timeout=PROCESS_TIMEOUT) as acquired:
-            if not acquired:
-                return response.build_error(
-                    "Timed out waiting for another request using this API key to finish.",
-                    504,
-                )
-            return _handle_locked_request(xuid, api_keys, jai_req, response, proxy_test)
+        return _handle_request(xuid, api_keys, jai_req, response, proxy_test)
+    except RoleplayError as e:
+        return response.build_error(str(e), 400)
     except Exception as e:  # ruff: ignore[BLE001]
         print_exception(e)
         return response.build_error("Internal Proxy Error", 500)
 
 
-def _handle_locked_request(
+def _handle_request(
     xuid: XUID,
     api_keys: list[str],
     jai_req: JaiRequest,
     response: ResponseHelper,
     proxy_test: bool,
 ):
-    """Read and save settings only while this request owns the user's lock."""
+    """Run an independent request snapshot without a generation-wide user lock."""
     assert storage is not None
     request_path = request.path
     user = UserSettings(storage, xuid)
@@ -83,9 +79,8 @@ def _handle_locked_request(
 
     # Handle user's request
 
-    rcounter = user.get_rcounter()
+    rcounter = user.inc_rcounter()
     api_key_index = rcounter % len(api_keys)
-    user.inc_rcounter()
 
     jai_req.api_key = api_keys[api_key_index]
     jai_req.api_key_index = api_key_index
