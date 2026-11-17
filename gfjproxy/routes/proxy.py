@@ -6,6 +6,7 @@ from ..cooldown import get_cooldown
 from ..handlers import handle_chat_message, handle_proxy_test
 from ..logging import xlog, xlogtime
 from ..models import JaiRequest
+from ..roleplay import RoleplayError
 from ..storage import storage
 from ..utils import ResponseHelper, comma_split, is_proxy_test
 from ..xuid_secret import xuid_secret
@@ -45,12 +46,25 @@ def handle():
     api_keys = comma_split(request_auth[1])
     xuid = XUID(api_keys[0], xuid_secret)
 
-    if not storage.lock(xuid):
-        xlog(xuid, "User attempted concurrent use")
-        return response.build_error(
-            "Concurrent use is not allowed. Please wait a moment.", 403
-        )
+    try:
+        return _handle_request(xuid, api_keys, jai_req, response, proxy_test)
+    except RoleplayError as e:
+        return response.build_error(str(e), 400)
+    except Exception as e:  # ruff: ignore[BLE001]
+        print_exception(e)
+        return response.build_error("Internal Proxy Error", 500)
 
+
+def _handle_request(
+    xuid: XUID,
+    api_keys: list[str],
+    jai_req: JaiRequest,
+    response: ResponseHelper,
+    proxy_test: bool,
+):
+    """Run an independent request snapshot without a generation-wide user lock."""
+    assert storage is not None
+    request_path = request.path
     user = UserSettings(storage, xuid)
 
     # Cheap and easy rate limiting
@@ -61,14 +75,12 @@ def handle():
         and (delay := cooldown - seconds) > 0
     ):
         xlog(user, f"User told to wait {delay} seconds")
-        storage.unlock(xuid)
         return response.build_error(f"Please wait {delay} seconds.", 429)
 
     # Handle user's request
 
-    rcounter = user.get_rcounter()
+    rcounter = user.inc_rcounter()
     api_key_index = rcounter % len(api_keys)
-    user.inc_rcounter()
 
     jai_req.api_key = api_keys[api_key_index]
     jai_req.api_key_index = api_key_index
@@ -119,7 +131,5 @@ def handle():
         user.save()
     else:
         xlog(user, "Invalid user not saved")
-
-    storage.unlock(xuid)
 
     return response.build()

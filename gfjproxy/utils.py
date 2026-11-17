@@ -76,16 +76,27 @@ class ResponseHelper:
         return self
 
     def build(self) -> Response:
-        if self._status != 200 and len(self._messages) == 1:
+        # Command confirmations and provider diagnostics must never turn a
+        # failed generation into an HTTP 200 assistant reply (including SSE).
+        if self._status != 200:
+            message = self.message
+            if len(self._messages) > 1:
+                message = "\n".join(
+                    f"Error {msg.status_code}: {msg.text}"
+                    if msg.kind == MessageKind.ERROR
+                    and not msg.text.startswith("Error from")
+                    else msg.text
+                    for msg in self._messages
+                )
             if self._wrap_errors:
                 return Response(
-                    response=[json.dumps({"error": self.message.strip()})],
+                    response=[json.dumps({"error": message.strip()})],
                     status=self._status,
                     content_type="application/json; charset=utf-8",
                 )
             else:
                 return Response(
-                    response=[self.message],
+                    response=[message],
                     status=self._status,
                     content_type="text/plain; charset=utf-8",
                 )
