@@ -176,7 +176,7 @@ You can use models from different companies: Cerebras, DeepSeek, Google, Nvidia 
 
 You can see proxy statistics and find out if there are more errors than usual. Open `{PROXY_URL}/stats` to find out.
 
-You should only see this banner if you are a new user or if there is an update. Send a message with `//banner` to see this banner again. Change your proxy URL to `{PROXY_URL}/quiet/` to disable it.
+Automatic banners and chat announcements are disabled. Send a message with `//banner` to see this banner on request.
 
 ***
 

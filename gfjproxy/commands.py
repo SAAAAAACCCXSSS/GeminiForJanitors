@@ -140,6 +140,7 @@ def aboutme(args, user, jai_req, response):
         f"\u200b- //search {'on' if user.use_search else 'off'}",
         f"\u200b- //think {'on' if user.use_think else 'off'}",
         f"\u200b- //think_text {user.think_text}",
+        f"\u200b- //rp {'on' if user.use_rp else 'off'}",
         *(
             f"\u200b- //advset_{setting} {'on' if user.advsettings.get(setting) else 'off'}"
             + (
@@ -287,6 +288,16 @@ def think(args, user, jai_req, response):
         return response
     return response.add_proxy_message(
         f"Thinking {'enabled' if jai_req.use_think else 'disabled'}"
+        + (" (for this message only)." if args == "this" else ".")
+    )
+
+
+@command(argspec=r"off|on|this", setting="rp")
+def rp(args, user, jai_req, response):
+    if jai_req.quiet_commands:
+        return response
+    return response.add_proxy_message(
+        f"Canonical RP mode {'enabled' if jai_req.use_rp else 'disabled'}"
         + (" (for this message only)." if args == "this" else ".")
     )
 
@@ -462,6 +473,9 @@ Preset commands need to be called every time you want to use them.
 
 - `//think_text keep|remove`
   Configures the proxy to either include the model's thinking in the response or remove it entirely.
+
+- `//rp on|off|this`
+  Applies canon-focused RP style rules to the character's system prompt. `on` persists across chats using the same primary API key; `this` is for one message.
 
 - `//nobot on|off|this`
   Removes the bot's description from the chat, in case it contains ToS-breaking content. *Note:* use this only as a last resort. This will negatively impact your chat.

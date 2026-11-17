@@ -404,6 +404,14 @@ class UserSettings:
     def use_think(self, value):
         self._data["use_think"] = bool(value)
 
+    @property
+    def use_rp(self) -> bool:
+        return bool(self._data.get("use_rp", False))
+
+    @use_rp.setter
+    def use_rp(self, value):
+        self._data["use_rp"] = bool(value)
+
     #########################
 
     @property
