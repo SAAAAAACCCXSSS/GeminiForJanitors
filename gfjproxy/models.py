@@ -75,6 +75,7 @@ class JaiRequest:
     use_preset: str | None = None
     use_search: bool = False
     use_think: bool = False
+    use_rp: bool = False
 
     advsettings: dict[str, bool] = field(default_factory=dict)
 

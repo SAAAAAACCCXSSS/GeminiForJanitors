@@ -5,7 +5,7 @@ import pytest
 from httpx2 import ReadTimeout
 from pytest_mock import MockerFixture
 
-from gfjproxy._globals import BANNER, BANNER_VERSION
+from gfjproxy._globals import BANNER_VERSION
 from gfjproxy.handlers import handle_chat_message, handle_proxy_test
 from gfjproxy.models import JaiMessage, JaiRequest
 from gfjproxy.utils import ResponseHelper
@@ -256,9 +256,9 @@ def test_proxy_test(mocker: MockerFixture, params: dict[str, Any]):
 
 
 CHAT_MESSAGE_TESTS = [
-    {  # Blank-slate users should get the bot response plus the latest banner
+    {  # Blank-slate users should get only the bot response
         "generate_content_mock": make_mock_response("Bot response."),
-        "expected_result": ("Bot response.\n" + BANNER, 200),
+        "expected_result": ("Bot response.", 200),
         "extra_settings": [],
     },
     {  # Blank-slate users on /quiet/ should not see any banner
@@ -275,9 +275,9 @@ CHAT_MESSAGE_TESTS = [
             ("call_do_show_banner", BANNER_VERSION),
         ],
     },
-    {  # Users that saw a different banner should see the newest one
+    {  # Users that saw an older banner should not see an automatic update
         "generate_content_mock": make_mock_response("Bot response."),
-        "expected_result": ("Bot response.\n" + BANNER, 200),
+        "expected_result": ("Bot response.", 200),
         "extra_settings": [
             ("call_do_show_banner", BANNER_VERSION - 1),
         ],

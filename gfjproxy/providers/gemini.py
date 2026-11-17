@@ -1,3 +1,4 @@
+from os import getenv
 from typing import Any
 
 import httpx2
@@ -92,6 +93,22 @@ def gemini_generate_content(
 
     generation_config: dict[str, Any] = {}
 
+    # Gemini's real systemInstruction is opt-out for easy rollback.
+    # Set GFJPROXY_SYSTEM_INSTRUCTION=0 to restore the original request format.
+    use_system_instruction = getenv(
+        "GFJPROXY_SYSTEM_INSTRUCTION", "1"
+    ).strip().lower() not in {"0", "false", "off", "no"}
+    system_messages = [
+        message.content
+        for message in messages
+        if message.role == "system" and message.content.strip()
+    ]
+    chat_messages = (
+        [message for message in messages if message.role != "system"]
+        if use_system_instruction
+        else messages
+    )
+
     gemini_request: dict[str, Any] = {
         "safetySettings": [
             {
@@ -121,9 +138,14 @@ def gemini_generate_content(
                 "role": "user" if msg.role == "user" else "model",
                 "parts": [{"text": msg.content}],
             }
-            for msg in messages
+            for msg in chat_messages
         ],
     }
+
+    if use_system_instruction and system_messages:
+        gemini_request["systemInstruction"] = {
+            "parts": [{"text": "\n\n".join(system_messages)}]
+        }
 
     for key, value in (settings or {}).items():
         if key == "temperature":

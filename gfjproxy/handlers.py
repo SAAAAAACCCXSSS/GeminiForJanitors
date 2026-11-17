@@ -2,7 +2,7 @@ import re
 from random import randint
 from typing import Any, cast
 
-from ._globals import BANNER, BANNER_VERSION
+from ._globals import PRESETS
 from .commands import CommandError, CommandExit
 from .logging import xlog
 from .models import JaiMessage, JaiRequest, JaiResult, JaiResultMetadata
@@ -271,6 +271,20 @@ def handle_chat_message(
 
         if jai_req.messages and jai_req.messages[0].role == "system":
             jai_req.messages.pop(0)
+
+    # Optional, persistent canon-focused roleplay rules. These are attached to
+    # the existing character description, never substituted for it.
+    if jai_req.use_rp or user.use_rp:
+        rp_rules = PRESETS.get("canonrp")
+        if not rp_rules:
+            raise RuntimeError("Missing presets/canonrp.txt")
+
+        if jai_req.messages and jai_req.messages[0].role == "system":
+            jai_req.messages[0].content += "\n\n" + rp_rules
+        else:
+            jai_req.messages.insert(0, JaiMessage(content=rp_rules, role="system"))
+
+        xlog(user, "Canonical RP mode applied")
 
     if jai_req.use_dice_char or user.use_dice_char:
         xlog(
@@ -561,12 +575,6 @@ def handle_chat_message(
         xlog(user, f" - Total    tokens {usage.total_tokens}")
     else:
         xlog(user, " - No usage metadata")
-
-    if not jai_req.quiet and user.do_show_banner(BANNER_VERSION):
-        xlog(
-            user, f"Showing{' new ' if not user.exists else ' '}user the latest banner"
-        )
-        response.add_message(BANNER)
 
     track_stats(f"r.{rtype}.succeeded")
     return response

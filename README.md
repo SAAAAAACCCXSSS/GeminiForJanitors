@@ -10,6 +10,41 @@
 - [Deploying on Railway](#deploying-on-railway)
 - [Deploying on Render](#deploying-on-render)
 - [Adaptive Cooldown](#adaptive-cooldown)
+- [Chat and roleplay settings](#chat-and-roleplay-settings)
+
+## Chat and roleplay settings
+
+Automatic banners and administrator announcements are no longer appended to chat
+responses, including streaming responses and the `/quiet/` endpoints. Command
+confirmations, diagnostics, and errors remain visible. Use `//banner` to request
+the banner manually. Administrator announcements can still appear on the proxy's
+web page.
+
+The Google provider sends system messages (including the character description)
+in Gemini's native `systemInstruction` field, preserving their order and keeping
+user and assistant turns in `contents`. Other providers retain their existing
+request format. Set `GFJPROXY_SYSTEM_INSTRUCTION=0` and restart the proxy to restore
+the previous Google request format if a model requires it.
+
+Optional literary roleplay rules are available through these chat commands:
+
+| Command | Effect |
+| --- | --- |
+| `//rp on` | Enable for this and subsequent requests using the same primary API key. |
+| `//rp off` | Disable for this and subsequent requests. |
+| `//rp this` | Enable for this request without changing the saved setting. |
+| `//aboutme` | Show the saved RP setting alongside other commands. |
+
+RP mode defaults to off. Its editable rules are in `presets/canonrp.txt`, loaded
+when the proxy starts. They encourage literary English prose, canonical character
+voices, continuity, gradual emotional development, actions in asterisks, and
+dialogue in double quotes. They preserve the character's description and the
+user's control over their own character. With `//nobot`, the character description
+is intentionally removed while the RP rules still apply. Existing prompt
+transformations such as `//noass` continue to work as before.
+
+Persistent settings use the existing user storage: Redis in production, or
+process-local storage in development.
 
 ## Running locally
 
