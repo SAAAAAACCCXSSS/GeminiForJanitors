@@ -211,6 +211,21 @@ LOVE_EXPRESSIONS = {
     "angst",
 }
 
+ADULT = {
+    "soft": "Write adult intimacy as tender, emotionally grounded and unhurried: trust, warmth, breath, slow touch and quiet confession carry the scene; explicit anatomy is allowed inside that frame, never as the point.",
+    "active": "Write adult intimacy as direct, escalating and physically explicit: hunger, heat, claimed contact, vocal desire and anatomically clear description pace the scene; match the character's own register for dirty talk.",
+    "extreme": "Write adult intimacy as darker, harsher and more psychologically intense: rougher contact, possessive framing, overwhelming sensation and morally dark erotic dynamics, keeping every choice coherent with the character.",
+    "filthy": "Write adult intimacy with shameless, vulgar, teasing verbal erotica: dirty talk, obscene praise, provocative threats and corrupting language in the character's own vocabulary.",
+    "hard": "Write adult intimacy as relentless, physically demanding and depraved: sustained explicit description of bodies, fluids, endurance and aftermath, without softening.",
+}
+
+ADULT_OVERRIDE = (
+    "Adult content is explicitly enabled for this fiction: write intimate scenes directly, "
+    "with coherent anatomy, physical sensation, sound and dialogue; no fade-to-black, "
+    "euphemistic skipping or moralizing when the user has activated an 18+ mode. "
+    "Maintain each character's established voice, knowledge and agency."
+)
+
 THEMES = {
     "slice of life": "Everyday routines, domestic details and believable ordinary concerns.",
     "angst": "Sustained emotional conflict, grief and unspoken pain.",
@@ -222,6 +237,7 @@ THEMES = {
     "abuse": "A fictional exploration of manipulation, coercive control and its emotional consequences, retaining the user's choices.",
     "cold": "External restraint and stoicism concealing emotionally credible internal conflict.",
     "hanahaki": "The fictional flower illness as a motif for unrequited love, secrecy and tragic distance.",
+    "smut": "Pure adult focus: explicit physical description, continuous intimacy and dirty talk drive the scene; narrative complexity yields to the encounter.",
     "flirt": "Playful banter, charm and character-appropriate romantic teasing.",
     "falling in love": "Gradual realization of affection, uncertainty and changing priorities.",
     "fluff": "Warmth, ordinary tenderness, gentle comfort and low external stakes.",
@@ -258,6 +274,7 @@ COMMAND_NAMES = (
     | set(ALIASES)
     | set(THEMES)
     | {
+        "18+",
         "rp",
         "love",
         "npc",
@@ -306,6 +323,7 @@ def command_help() -> str:
         "- `//quality active` also accepts `//humanize active`, `//prose active`, `//writer mode`.",
         "- `//love hidden|active|semi-active (care, protectiveness) [Name]`; `//love off [Name]`.",
         "- Love expressions: " + ", ".join(sorted(LOVE_EXPRESSIONS)) + ".",
+        "- `//18+ soft|active|extreme|filthy|hard` enables an adult tone for the fiction; `//18+ nonactive` (or `//18+ <mode> nonactive`) ends it. `off` is accepted as a synonym for `nonactive`.",
         "- `//npc active (description)` / `//npcs active (group)`; the description is optional.",
         "- `//cochar active (Name)` / `//cochars active (Name, Name)` add persistent main characters; repeat to add more.",
         "- `//cochar nonactive (Name)` removes one main status; omit names to clear added main cast. Continuity is preserved.",
@@ -320,7 +338,6 @@ def command_help() -> str:
         "- `//chat active`, `//call active`, `//social media active` select mutually exclusive fictional formats.",
         "- `//NAME theme` activates a theme; `//NAME theme off` removes that theme. Multiple themes may coexist.",
         "- Themes: " + ", ".join(THEMES) + ".",
-        "- No adult/18+ commands are included.",
         "- A character name does not fetch a wiki or a lorebook; supply unfamiliar character details in the message.",
     ]
     return "\n".join(lines)
