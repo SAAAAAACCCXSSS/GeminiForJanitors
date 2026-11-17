@@ -15,6 +15,8 @@ from .providers.nvidia import nvidia_generate_content
 from .providers.openrouter import openrouter_generate_content
 from .providers.proxy import proxy_generate_content
 from .providers.z_ai import z_ai_generate_content
+from .roleplay import build_prompt
+from .roleplay import enabled as rp_enabled
 from .statistics import track_stats
 from .utils import ResponseHelper
 from .xuiduser import XUID, UserSettings
@@ -262,6 +264,17 @@ def handle_chat_message(
         )
         return response
 
+    # Pure settings commands must not generate a phantom scene turn or consume
+    # model quota. Explicit recap/interlude/transition tasks still generate.
+    if jai_req.rp_status_only or (
+        last_user_message.commands
+        and all(command.narrative for command in last_user_message.commands)
+        and not last_user_message.content.strip()
+        and not jai_req.rp_tasks
+        and not jai_req.rp_generate
+    ):
+        return response
+
     if jai_req.use_nobot or user.use_nobot:
         xlog(
             user,
@@ -274,7 +287,7 @@ def handle_chat_message(
 
     # Optional, persistent canon-focused roleplay rules. These are attached to
     # the existing character description, never substituted for it.
-    if jai_req.use_rp or user.use_rp:
+    if rp_enabled(user, jai_req):
         rp_rules = PRESETS.get("canonrp")
         if not rp_rules:
             raise RuntimeError("Missing presets/canonrp.txt")
@@ -285,6 +298,17 @@ def handle_chat_message(
             jai_req.messages.insert(0, JaiMessage(content=rp_rules, role="system"))
 
         xlog(user, "Canonical RP mode applied")
+
+    if controls := build_prompt(user, jai_req):
+        if jai_req.messages and jai_req.messages[0].role == "system":
+            jai_req.messages[0].content += "\n\n" + controls
+        else:
+            jai_req.messages.insert(0, JaiMessage(content=controls, role="system"))
+
+    if (
+        jai_req.rp_tasks or jai_req.rp_generate
+    ) and not last_user_message.content.strip():
+        last_user_message.content = "Please apply the current narrative directions to this response without choosing the user's actions or dialogue."
 
     if jai_req.use_dice_char or user.use_dice_char:
         xlog(

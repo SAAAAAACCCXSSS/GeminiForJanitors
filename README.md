@@ -14,6 +14,23 @@
 
 ## Chat and roleplay settings
 
+The extended COMMAND SYSTEM by **dainsleifswife** is documented in
+[the Russian command guide](README_RP_RU.md). Send `//help rp` for complete
+in-chat help, `//rp status` for saved settings, or `//rp reset` to clear them.
+Commands work directly in messages without Chat Memory. Added cast and narrative
+settings persist for the primary API key across chats, like the existing proxy
+settings; add `this` after a mode for one request.
+
+```text
+//cochar active (Pantalone)
+//pace slow //love hidden [Pantalone] //detail rich
+Continue the scene.
+```
+
+Saved-setting-only RP messages return confirmations without calling a model.
+One-request (`this`) modes, scenario selection, `//recap`, `//interlude (...)`,
+and `//scene next (...)` still generate a response. Adult/18+ commands are not included.
+
 Automatic banners and administrator announcements are no longer appended to chat
 responses, including streaming responses and the `/quiet/` endpoints. Command
 confirmations, diagnostics, and errors remain visible. Use `//banner` to request
