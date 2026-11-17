@@ -74,6 +74,40 @@ def test_commands_and_errors_stay_visible(chat, stream):
     assert "Gateway Timeout" in send(stream=stream)[1]
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("path", ["/chat/completions", "/quiet/chat/completions"])
+def test_provider_503_after_command_is_an_http_error(chat, stream, path):
+    send, post = chat
+    send("//rp on")
+    post.return_value = httpx2.Response(
+        503,
+        request=httpx2.Request("POST", "https://generativelanguage.googleapis.com/"),
+        json={
+            "error": {
+                "code": 503,
+                "status": "UNAVAILABLE",
+                "message": "This model is currently experiencing high demand.",
+            }
+        },
+    )
+
+    status, text = send("//rp off Continue.", stream=stream, path=path)
+
+    assert status == 503
+    assert "Canonical RP mode disabled" in text
+    assert "Saved for the primary API key" in text
+    assert "Error from Google AI (503): UNAVAILABLE" in text
+    assert "This model is currently experiencing high demand." in text
+    assert "<proxy>" not in text
+    assert '"choices"' not in text
+    assert not text.startswith("data: ")
+    post.assert_called_once()
+    # The command was saved even though the subsequent generation failed.
+    post.reset_mock()
+    assert "saved RP: off" in send("//rp status")[1]
+    post.assert_not_called()
+
+
 @pytest.mark.parametrize("system", [False, True])
 def test_rp_settings_and_prompt_survive_across_requests(chat, system):
     send, post = chat

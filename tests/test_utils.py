@@ -1,3 +1,5 @@
+import pytest
+
 from gfjproxy.utils import ResponseHelper, comma_split, is_proxy_test
 
 ################################################################################
@@ -56,6 +58,48 @@ def test_comma_split():
     assert comma_split("A,, B,, C") == ["A", "B", "C"]
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("wrap_errors", [False, True])
+@pytest.mark.parametrize("status", [400, 429, 503, 504])
+def test_errors_with_command_output_preserve_http_status(stream, wrap_errors, status):
+    response = (
+        ResponseHelper(use_stream=stream, wrap_errors=wrap_errors)
+        .add_proxy_message("Setting saved.")
+        .add_error(f"Error from provider ({status}): unavailable", status)
+        .add_proxy_message("Additional diagnostic details.")
+        .build()
+    )
+
+    assert response.status_code == status
+    expected = (
+        f"Setting saved.\nError from provider ({status}): unavailable\n"
+        "Additional diagnostic details."
+    )
+    if wrap_errors:
+        assert response.mimetype == "application/json"
+        assert response.get_json() == {"error": expected}
+    else:
+        assert response.mimetype == "text/plain"
+        assert response.get_data(as_text=True) == expected
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("wrap_errors", [False, True])
+def test_error_with_diagnostics_only_remains_an_error(stream, wrap_errors):
+    response = (
+        ResponseHelper(use_stream=stream, wrap_errors=wrap_errors)
+        .add_error("Unavailable", 503)
+        .add_proxy_message("Try again later.")
+        .build()
+    )
+    assert response.status_code == 503
+    expected = "Error 503: Unavailable\nTry again later."
+    if wrap_errors:
+        assert response.get_json() == {"error": expected}
+    else:
+        assert response.get_data(as_text=True) == expected
+
+
 ################################################################################
 
 
@@ -92,24 +136,22 @@ def test_response_helper():
         == ['{"error": "PROXY ERROR 400: Lorem Ipsum"}']
     )
 
-    assert (  # Ensure multiple error messages become a chat response (status == 200)
+    assert (  # Multiple error messages preserve the final error status
         ResponseHelper()
         .add_error("Lorem Ipsum", 400)
         .add_error("Dolor Sit", 300)
         .build()
         .status_code
-        == 200
+        == 300
     )
 
-    assert (  # Ensure multiple error messages are wrapped around <proxy></proxy>
+    assert (  # Error responses contain diagnostics without chat markup
         ResponseHelper()
         .add_error("Lorem", 400)
         .add_error("Ipsum", 300)
         .build()
         .response  # flask.Response.response
-        == make_jai_res_str(
-            proxy_open, "Error 400: Lorem", new_line, "Error 300: Ipsum", proxy_close
-        )
+        == ["Error 400: Lorem\nError 300: Ipsum"]
     )
 
     # Basic chat responses (successful responses from Google AI)
@@ -266,7 +308,7 @@ def test_response_helper():
         )
     )
 
-    assert (  # Test all features at once
+    response = (  # Mixed output must still be returned as a failed request
         ResponseHelper()
         .add_message("  Bot reply with leading spaces")
         .add_proxy_message("Proxy banner")
@@ -277,28 +319,20 @@ def test_response_helper():
         .add_error("Proxy had another error", 502)
         .add_message("Trailing bot reply")
         .build()
-        .response  # flask.Response.response
-        == make_jai_res_str(
+    )
+    assert response.status_code == 502
+    assert response.mimetype == "text/plain"
+    assert response.get_data(as_text=True) == new_line.join(
+        [
             "  Bot reply with leading spaces",
-            new_line,
-            proxy_open
-            + "Proxy banner"
-            + new_line
-            + "Error 500: Proxy had an error"
-            + proxy_close,
-            new_line,
+            "Proxy banner",
+            "Error 500: Proxy had an error",
             "This comes after the closing tag",
-            new_line,
             "Bot reply with trailing spaces  ",
-            new_line,
-            proxy_open
-            + "More proxy banner"
-            + new_line
-            + "Error 502: Proxy had another error"
-            + proxy_close,
-            new_line,
+            "More proxy banner",
+            "Error 502: Proxy had another error",
             "Trailing bot reply",
-        )
+        ]
     )
 
 
