@@ -2,6 +2,7 @@ from traceback import print_exception
 
 from flask import Blueprint, abort, request
 
+from .._globals import PROCESS_TIMEOUT
 from ..cooldown import get_cooldown
 from ..handlers import handle_chat_message, handle_proxy_test
 from ..logging import xlog, xlogtime
@@ -45,12 +46,29 @@ def handle():
     api_keys = comma_split(request_auth[1])
     xuid = XUID(api_keys[0], xuid_secret)
 
-    if not storage.lock(xuid):
-        xlog(xuid, "User attempted concurrent use")
-        return response.build_error(
-            "Concurrent use is not allowed. Please wait a moment.", 403
-        )
+    try:
+        with storage.request_lock(xuid, timeout=PROCESS_TIMEOUT) as acquired:
+            if not acquired:
+                return response.build_error(
+                    "Timed out waiting for another request using this API key to finish.",
+                    504,
+                )
+            return _handle_locked_request(xuid, api_keys, jai_req, response, proxy_test)
+    except Exception as e:  # ruff: ignore[BLE001]
+        print_exception(e)
+        return response.build_error("Internal Proxy Error", 500)
 
+
+def _handle_locked_request(
+    xuid: XUID,
+    api_keys: list[str],
+    jai_req: JaiRequest,
+    response: ResponseHelper,
+    proxy_test: bool,
+):
+    """Read and save settings only while this request owns the user's lock."""
+    assert storage is not None
+    request_path = request.path
     user = UserSettings(storage, xuid)
 
     # Cheap and easy rate limiting
@@ -61,7 +79,6 @@ def handle():
         and (delay := cooldown - seconds) > 0
     ):
         xlog(user, f"User told to wait {delay} seconds")
-        storage.unlock(xuid)
         return response.build_error(f"Please wait {delay} seconds.", 429)
 
     # Handle user's request
@@ -119,7 +136,5 @@ def handle():
         user.save()
     else:
         xlog(user, "Invalid user not saved")
-
-    storage.unlock(xuid)
 
     return response.build()
