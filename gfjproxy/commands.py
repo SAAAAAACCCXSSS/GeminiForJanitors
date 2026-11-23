@@ -10,6 +10,7 @@ from ._globals import BANNER, BANNER_VERSION, PRESETS
 from .roleplay import Directive, RoleplayError, execute, parse_directive, status_text
 from .rp_rules import command_help
 from .utils import ResponseHelper
+from . import jailbreak as jb
 
 ################################################################################
 
@@ -144,6 +145,7 @@ def aboutme(args, user, jai_req, response):
         f"\u200b- //think {'on' if user.use_think else 'off'}",
         f"\u200b- //think_text {user.think_text}",
         f"\u200b- //rp {'on' if user.use_rp else 'off'}",
+        f"\u200b- //jailbreak {'on' if jb.ENABLED else 'off'}",
         *(
             f"\u200b- //advset_{setting} {'on' if user.advsettings.get(setting) else 'off'}"
             + (
@@ -181,8 +183,26 @@ def preset(args, user, jai_req, response):
         )
 
     jai_req.use_preset = PRESETS[args]
+    jai_req.use_preset_name = args
+    jb.prepare(args, jai_req)
 
     return response.add_proxy_message(f'Added preset "`{args}`" to this message.')
+
+
+@command(argspec=r"on|off|status")
+def jailbreak(args, user, jai_req, response):
+    if args == "status":
+        state = "on" if jb.ENABLED else "off"
+        active = getattr(jai_req, "_jailbreak_preset", None) or "none"
+        return response.add_proxy_message(
+            f"Jailbreak prefill: {state}. Active preset this request: {active}."
+        )
+    if args == "on":
+        jb.ENABLED = True
+        return response.add_proxy_message("Jailbreak prefill: on.")
+    jb.ENABLED = False
+    jb.clear(jai_req)
+    return response.add_proxy_message("Jailbreak prefill: off.")
 
 
 ################################################################################
@@ -466,6 +486,9 @@ Preset commands need to be called every time you want to use them.
 - `//prefill_mode 0|1|2|3`
   Selects what kind of prefill/jailbreak to use: classic (0), interaction config (1), starter (2), combined (3).
 
+- `//jailbreak on|off|status`
+  Toggles the assistant-side scene prefill that activates alongside explicit presets. `status` shows whether it is on and which preset was detected this request.
+
 - `//search on|off|this`
   Enables the use of Google Search, allowing the model to look up any information relevant to the chat.
 
@@ -487,6 +510,9 @@ Preset commands need to be called every time you want to use them.
 
 - `//preset minipopka`
   Adds a longer writing guideline to enhance narration and NSFW roleplay.
+
+- `//preset sexstyle`
+  Full explicit-roleplay preset with vocabulary, anatomy, physiology and refusal pre-emption. Activates the jailbreak prefill automatically.
 
 - `//dice_roll [count]d(faces)[(p|m)(extra)]`
 - `//dice_char on|off|this`
