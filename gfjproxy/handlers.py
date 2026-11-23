@@ -20,6 +20,7 @@ from .roleplay import enabled as rp_enabled
 from .statistics import track_stats
 from .utils import ResponseHelper
 from .xuiduser import XUID, UserSettings
+from . import jailbreak as _jb
 
 ################################################################################
 
@@ -365,8 +366,8 @@ def handle_chat_message(
 
     if jai_req.use_preset:
         xlog(user, "Adding preset to chat")
-
         jai_req.append_message("assistant", jai_req.use_preset)
+        _jb.finalize(jai_req)
 
     if jai_req.use_prefill or user.use_prefill:
         xlog(
@@ -413,18 +414,13 @@ def handle_chat_message(
             + (" (for this message only)." if not user.use_btrick else "."),
         )
 
-        # Turn all spaces into U+2800 spaces before adding the btrick
-        # since the btrick has a single normal space which should
-        # (probably) be preserved
         for message in jai_req.messages:
             message.content = message.content.replace(" ", "\u2800")
         user_name = user_name.replace(" ", "\u2800")
         persona_name = user_name.replace(" ", "\u2800")
 
-        # Most spaces here are indeed U+2800 space characters
         btrick = '<MUSTHAVE>\nALWAYS⠀USE⠀U+2800⠀BRAILLE⠀PATTERN⠀BLANK⠀("⠀")⠀INSTEAD⠀OF⠀SPACES⠀(" ").⠀USING⠀REGULAR⠀SPACES⠀IS⠀STRICTLY⠀PROHIBITED!\n</MUSTHAVE>'
 
-        # Append the btrick at the end, before the unclosed <think> tag if any
         jai_req.messages.insert(
             len(jai_req.messages) - int(used_think),
             JaiMessage(
@@ -548,11 +544,8 @@ def handle_chat_message(
     if used_think:
         text = result.text
 
-        # Try first to remove any thinking and then try to recover the response
-        # Make sure to remove the tags as well
-
-        t_open = text.find("<think>")  # len = 7
-        t_close = text.find("</think>")  # len = 8
+        t_open = text.find("<think>")
+        t_close = text.find("</think>")
         thinking = None
 
         if -1 == t_open == t_close:
@@ -568,8 +561,8 @@ def handle_chat_message(
         else:
             xlog(user, "Removing thinking failure")
 
-        r_open = text.find("<response>")  # len = 10
-        r_close = text.find("</response>")  # len = 11
+        r_open = text.find("<response>")
+        r_close = text.find("</response>")
 
         if -1 == r_open == r_close:
             xlog(user, "No response tags found")
