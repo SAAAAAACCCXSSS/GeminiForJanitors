@@ -183,7 +183,6 @@ def preset(args, user, jai_req, response):
         )
 
     jai_req.use_preset = PRESETS[args]
-    jai_req.use_preset_name = args
     jb.prepare(args, jai_req)
 
     return response.add_proxy_message(f'Added preset "`{args}`" to this message.')
@@ -193,7 +192,7 @@ def preset(args, user, jai_req, response):
 def jailbreak(args, user, jai_req, response):
     if args == "status":
         state = "on" if jb.ENABLED else "off"
-        active = getattr(jai_req, "_jailbreak_preset", None) or "none"
+        active = jb.get_active_preset(jai_req)
         return response.add_proxy_message(
             f"Jailbreak prefill: {state}. Active preset this request: {active}."
         )
