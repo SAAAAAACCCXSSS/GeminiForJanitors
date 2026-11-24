@@ -37,10 +37,6 @@ def _resolve_link(user: XUID, link: str) -> str:
 
 
 def _get_finish_reason_feedback(response: dict[str, Any]) -> str | None:
-    """Extracts a human-readable message from a failed GenerateContentResponse dictionary.
-
-    Returns None if no message could be extracted."""
-
     prompt_feedback = response.get("promptFeedback")
     if isinstance(prompt_feedback, dict):
         if block_reason_message := prompt_feedback.get("blockReasonMessage"):
@@ -55,10 +51,6 @@ def _get_finish_reason_feedback(response: dict[str, Any]) -> str | None:
 
 
 def _get_quota_violation_feedback(qid: str) -> str | None:
-    """Converts a quota ID into a human-readable message.
-
-    Returns None if an unknown quota ID is given."""
-
     if qid.startswith(
         (
             "GenerateContentInputTokensPerModelPerMinute",
@@ -66,16 +58,12 @@ def _get_quota_violation_feedback(qid: str) -> str | None:
         )
     ):
         return "Input Tokens per Minute quota exceeded."
-
     if qid.startswith("GenerateContentInputTokensPerModelPerDay"):
         return "Input Tokens per Day quota exceeded."
-
     if qid.startswith("GenerateRequestsPerMinutePerProjectPerModel"):
         return "Requests per Minute quota exceeded."
-
     if qid.startswith("GenerateRequestsPerDayPerProjectPerModel"):
         return "Requests per Day quota exceeded."
-
     return None
 
 
@@ -86,15 +74,8 @@ def gemini_generate_content(
     messages: list[JaiMessage],
     settings: dict[str, Any] | None = None,
 ) -> JaiResult:
-    """Wrapper around Google AI's Gemini.
-
-    User paramater is only used for logging. Generation settings must all be passed inside the
-    settings parameter."""
-
     generation_config: dict[str, Any] = {}
 
-    # Gemini's real systemInstruction is opt-out for easy rollback.
-    # Set GFJPROXY_SYSTEM_INSTRUCTION=0 to restore the original request format.
     use_system_instruction = getenv(
         "GFJPROXY_SYSTEM_INSTRUCTION", "1"
     ).strip().lower() not in {"0", "false", "off", "no"}
@@ -111,26 +92,11 @@ def gemini_generate_content(
 
     gemini_request: dict[str, Any] = {
         "safetySettings": [
-            {
-                "threshold": "BLOCK_NONE",
-                "category": "HARM_CATEGORY_HATE_SPEECH",
-            },
-            {
-                "threshold": "BLOCK_NONE",
-                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-            },
-            {
-                "threshold": "BLOCK_NONE",
-                "category": "HARM_CATEGORY_HARASSMENT",
-            },
-            {
-                "threshold": "BLOCK_NONE",
-                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-            },
-            {
-                "threshold": "BLOCK_NONE",
-                "category": "HARM_CATEGORY_JAILBREAK",
-            },
+            {"threshold": "BLOCK_NONE", "category": "HARM_CATEGORY_HATE_SPEECH"},
+            {"threshold": "BLOCK_NONE", "category": "HARM_CATEGORY_DANGEROUS_CONTENT"},
+            {"threshold": "BLOCK_NONE", "category": "HARM_CATEGORY_HARASSMENT"},
+            {"threshold": "BLOCK_NONE", "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT"},
+            {"threshold": "BLOCK_NONE", "category": "HARM_CATEGORY_JAILBREAK"},
         ],
         "generationConfig": generation_config,
         "contents": [
@@ -208,10 +174,7 @@ def gemini_generate_content(
                 stats_key += ".unauthenticated"
                 if "invalid authentication credentials" in error_message:
                     stats_key += ".api_key"
-                    error_message = (
-                        "Request had invalid authentication credentials.\n"
-                        "Your API key is probably not valid."
-                    )
+                    error_message = "Invalid API key."
                     metadata.api_key_valid = False
             elif error_status == "INVALID_ARGUMENT":
                 stats_key += ".invalid"
@@ -226,8 +189,7 @@ def gemini_generate_content(
                 for detail in error_details:
                     if (
                         not isinstance(detail, dict)
-                        or detail.get("@type")
-                        != "type.googleapis.com/google.rpc.ErrorInfo"
+                        or detail.get("@type") != "type.googleapis.com/google.rpc.ErrorInfo"
                         or not (reason := detail.get("reason"))
                     ):
                         continue
@@ -246,8 +208,7 @@ def gemini_generate_content(
                 for detail in error_details:
                     if (
                         not isinstance(detail, dict)
-                        or detail.get("@type")
-                        != "type.googleapis.com/google.rpc.QuotaFailure"
+                        or detail.get("@type") != "type.googleapis.com/google.rpc.QuotaFailure"
                     ):
                         continue
                     quota_ids = (
@@ -264,30 +225,26 @@ def gemini_generate_content(
                         stats_key += ".unknown"
                         break
             
-            # НОВАЯ ПРОВЕРКА: Перехватываем 503 и даем подсказку
+            # --- ЖЕЛЕЗОБЕТОННАЯ ОШИБКА 503 ---
             if e.response.status_code == 503 or error_status == "UNAVAILABLE":
-                stats_key += ".unavailable_hidden_censor"
-                extras += (
-                    "\n\n**[SYSTEM HINT]:** Если эта ошибка 503 пришла **мгновенно** (без задержки), "
-                    "а изменение последнего предложения в вашем сообщении помогает её обойти — "
-                    "это **скрытая блокировка контента (цензура)**, а не перегрузка серверов."
+                stats_key += ".unavailable"
+                return JaiResult(
+                    503, 
+                    f"503 UNAVAILABLE: Сервера Google перегружены (или сработала скрытая цензура).\n"
+                    f"Если это сообщение повторяется только на одном конкретном тексте — это фильтр."
                 )
 
             message += f" ({error_code}): {error_status}\n{error_message}"
         elif error_text := e.response.text:
             xlog(user, f"{message}: {e.response.text!r}")
-
-            message += (
-                f" ({e.response.status_code}):\n{error_text[:100]}"
-                f"{'...' if len(error_text) > 100 else ''}"
-            )
+            message += f" ({e.response.status_code}):\n{error_text[:100]}..."
 
         track_stats(stats_key)
         return JaiResult(
             e.response.status_code, message, extras=extras, metadata=metadata
         )
-    except Exception as e:  # ruff: ignore[BLE001]
-        xlog(user, repr(e))  # These are R E A L L Y anomalous
+    except Exception as e:
+        xlog(user, repr(e))
         track_stats("g.failed.unknown")
         return JaiResult(502, "Unhanded exception from Google AI.")
 
@@ -296,8 +253,6 @@ def gemini_generate_content(
     metadata = JaiResultMetadata()
 
     if (candidates := gemini_result.get("candidates")) and isinstance(candidates, list):
-        if len(candidates) > 1:
-            xlog(user, "Warning: more than one candidate found in response")
         candidate = candidates[0]
         if isinstance(candidate, dict):
             if (
@@ -315,48 +270,24 @@ def gemini_generate_content(
                             text += part_text
 
             if gm := candidate.get("groundingMetadata"):
-                # U+3164 HANGUL FILLER
-
                 if isinstance((wsqs := gm.get("webSearchQueries")), list):
-                    xlog(user, f"Made {len(wsqs)} web searches")
-                    extras += (
-                        "Searches:\n"
-                        + "\n".join(f"\u3164- {wsq}" for wsq in wsqs)
-                        + "\n"
-                    )
-
+                    extras += "Searches:\n" + "\n".join(f"\u3164- {wsq}" for wsq in wsqs) + "\n"
                 if isinstance((gcs := gm.get("groundingChunks")), list):
                     links: list[str] = []
                     for gc in gcs:
-                        if (
-                            isinstance(gc, dict)
-                            and (web := gc.get("web"))
-                            and isinstance(web, dict)
-                            and (uri := web.get("uri"))
-                        ):
+                        if isinstance(gc, dict) and (web := gc.get("web")) and isinstance(web, dict) and (uri := web.get("uri")):
                             links.append(_resolve_link(user, uri))
-                    xlog(user, f"Found {len(gcs)} grounding chunks {len(links)} links")
-                    extras += (
-                        "Links:\n"
-                        + "\n".join(f"\u3164- {link}" for link in links)
-                        + "\n"
-                    )
+                    extras += "Links:\n" + "\n".join(f"\u3164- {link}" for link in links) + "\n"
 
+    # --- ЖЕЛЕЗОБЕТОННАЯ ЦЕНЗУРА (Пустой текст) ---
     if not text:
-        # Rejection
-
-        feedback = _get_finish_reason_feedback(gemini_result)
-        if not feedback:
-            xlog(user, f"No result text: {gemini_result}")
-            feedback = "UNKNOWN"
-
+        feedback = _get_finish_reason_feedback(gemini_result) or "UNKNOWN"
         track_stats(f"g.rejected.{feedback}")
         return JaiResult(
             502,
-            f"Response blocked/empty due to {feedback}.",
-            metadata=JaiResultMetadata(
-                rejection_feedback=feedback,
-            ),
+            f"🚫 ЦЕНЗУРА: Модель заблокировала ответ.\n"
+            f"Причина фильтра: {feedback}",
+            metadata=JaiResultMetadata(rejection_feedback=feedback),
         )
 
     if isinstance((usage := gemini_result.get("usageMetadata")), dict):
