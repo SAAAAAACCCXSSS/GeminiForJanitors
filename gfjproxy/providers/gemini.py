@@ -263,6 +263,15 @@ def gemini_generate_content(
                     else:
                         stats_key += ".unknown"
                         break
+            
+            # НОВАЯ ПРОВЕРКА: Перехватываем 503 и даем подсказку
+            if e.response.status_code == 503 or error_status == "UNAVAILABLE":
+                stats_key += ".unavailable_hidden_censor"
+                extras += (
+                    "\n\n**[SYSTEM HINT]:** Если эта ошибка 503 пришла **мгновенно** (без задержки), "
+                    "а изменение последнего предложения в вашем сообщении помогает её обойти — "
+                    "это **скрытая блокировка контента (цензура)**, а не перегрузка серверов."
+                )
 
             message += f" ({error_code}): {error_status}\n{error_message}"
         elif error_text := e.response.text:
