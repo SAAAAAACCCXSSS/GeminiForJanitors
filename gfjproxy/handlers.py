@@ -270,11 +270,21 @@ def handle_chat_message(
         )
         return response
 
+    storyboost_enabled = jai_req.use_storyboost or user.use_storyboost
+    storyboost_this = jai_req.use_storyboost and any(
+        command.name == "storyboost" and command.args == "this"
+        for command in last_user_message.commands
+    )
+
     # Pure settings commands must not generate a phantom scene turn or consume
     # model quota. Explicit recap/interlude/transition tasks still generate.
     if jai_req.rp_status_only or (
         last_user_message.commands
-        and all(command.narrative for command in last_user_message.commands)
+        and all(
+            command.narrative
+            or (command.name == "storyboost" and command.args in {"on", "off"})
+            for command in last_user_message.commands
+        )
         and not last_user_message.content.strip()
         and not jai_req.rp_tasks
         and not jai_req.rp_generate
@@ -311,8 +321,18 @@ def handle_chat_message(
         else:
             jai_req.messages.insert(0, JaiMessage(content=controls, role="system"))
 
+    if storyboost_enabled:
+        boost_rules = PRESETS.get("storyboost")
+        if not boost_rules:
+            raise RuntimeError("Missing presets/storyboost.txt")
+        if jai_req.messages and jai_req.messages[0].role == "system":
+            jai_req.messages[0].content += "\n\n" + boost_rules
+        else:
+            jai_req.messages.insert(0, JaiMessage(content=boost_rules, role="system"))
+        xlog(user, "StoryBoost quality mode applied")
+
     if (
-        jai_req.rp_tasks or jai_req.rp_generate
+        jai_req.rp_tasks or jai_req.rp_generate or storyboost_this
     ) and not last_user_message.content.strip():
         last_user_message.content = "Please apply the current narrative directions to this response without choosing the user's actions or dialogue."
 
@@ -488,6 +508,17 @@ def handle_chat_message(
         )
 
         settings["search"] = True
+
+    # High is supported by Gemini 3.1/3.5 Flash-Lite. Leave other models alone.
+    if (
+        storyboost_enabled
+        and _resolve_provider(jai_req.api_key)[0] == "google"
+        and jai_req.models.get("google", "").startswith(
+            ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
+        )
+    ):
+        settings["thinking_level"] = "HIGH"
+        xlog(user, "StoryBoost: Gemini Flash-Lite native thinking HIGH")
 
     if jai_req.use_fixturns or user.use_fixturns:
         xlog(

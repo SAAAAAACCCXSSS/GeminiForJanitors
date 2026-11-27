@@ -145,6 +145,7 @@ def aboutme(args, user, jai_req, response):
         f"\u200b- //think {'on' if user.use_think else 'off'}",
         f"\u200b- //think_text {user.think_text}",
         f"\u200b- //rp {'on' if user.use_rp else 'off'}",
+        f"\u200b- //storyboost {'on' if user.use_storyboost else 'off'}",
         f"\u200b- //jailbreak {'on' if jb.is_user_enabled(user) else 'off'}",
         *(
             f"\u200b- //advset_{setting} {'on' if user.advsettings.get(setting) else 'off'}"
@@ -320,6 +321,17 @@ def think(args, user, jai_req, response):
 def rp(args, user, jai_req, response):
     return _run_roleplay(
         Directive("rp", args=args, value=args), args, user, jai_req, response
+    )
+
+
+@command(argspec=r"off|on|this", setting="storyboost")
+def storyboost(args, user, jai_req, response):
+    """Attach continuity, character, and prose-quality guidelines to the system prompt."""
+    if jai_req.quiet_commands:
+        return response
+    return response.add_proxy_message(
+        f"StoryBoost {'enabled' if jai_req.use_storyboost else 'disabled'}"
+        + (" (for this message only)." if args == "this" else ".")
     )
 
 
@@ -501,6 +513,9 @@ Preset commands need to be called every time you want to use them.
 - `//rp on|off|this|status|reset`
   Applies canon-focused RP style rules to the character's system prompt. `on` persists across chats using the same primary API key; `this` is for one message.
   Use `//help rp` for the complete COMMAND SYSTEM by dainsleifswife (cast, relationships, themes, formats and author directions).
+
+- `//storyboost on|off|this`
+  Improves character consistency, continuity and prose quality using the conversation history that is actually available to the model. `on` persists for the same primary API key; `this` applies only to one response. Does not change the underlying model or restore truncated messages.
 
 - `//nobot on|off|this`
   Removes the bot's description from the chat, in case it contains ToS-breaking content. *Note:* use this only as a last resort. This will negatively impact your chat.

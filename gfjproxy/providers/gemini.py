@@ -128,6 +128,8 @@ def gemini_generate_content(
             generation_config["presencePenalty"] = value
         elif key == "search" and value:
             gemini_request["tools"] = [{"googleSearch": {}}]
+        elif key == "thinking_level" and value in {"MINIMAL", "LOW", "MEDIUM", "HIGH"}:
+            generation_config["thinkingConfig"] = {"thinkingLevel": value}
 
     try:
         response = http_client.post(
