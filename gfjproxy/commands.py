@@ -145,7 +145,7 @@ def aboutme(args, user, jai_req, response):
         f"\u200b- //think {'on' if user.use_think else 'off'}",
         f"\u200b- //think_text {user.think_text}",
         f"\u200b- //rp {'on' if user.use_rp else 'off'}",
-        f"\u200b- //jailbreak {'on' if jb.ENABLED else 'off'}",
+        f"\u200b- //jailbreak {'on' if jb.is_user_enabled(user) else 'off'}",
         *(
             f"\u200b- //advset_{setting} {'on' if user.advsettings.get(setting) else 'off'}"
             + (
@@ -183,7 +183,7 @@ def preset(args, user, jai_req, response):
         )
 
     jai_req.use_preset = PRESETS[args]
-    jb.prepare(args, jai_req)
+    jb.prepare(args, user, jai_req) # Передаем user сюда
 
     return response.add_proxy_message(f'Added preset "`{args}`" to this message.')
 
@@ -191,15 +191,16 @@ def preset(args, user, jai_req, response):
 @command(argspec=r"on|off|status")
 def jailbreak(args, user, jai_req, response):
     if args == "status":
-        state = "on" if jb.ENABLED else "off"
+        state = "on" if jb.is_user_enabled(user) else "off"
         active = jb.get_active_preset(jai_req)
         return response.add_proxy_message(
             f"Jailbreak prefill: {state}. Active preset this request: {active}."
         )
     if args == "on":
-        jb.ENABLED = True
+        jb.set_user_enabled(user, True)
         return response.add_proxy_message("Jailbreak prefill: on.")
-    jb.ENABLED = False
+    
+    jb.set_user_enabled(user, False)
     jb.clear(jai_req)
     return response.add_proxy_message("Jailbreak prefill: off.")
 
