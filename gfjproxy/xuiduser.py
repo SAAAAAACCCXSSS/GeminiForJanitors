@@ -489,6 +489,14 @@ class UserSettings:
         self._set("use_rp", bool(value))
 
     @property
+    def use_storyboost(self) -> bool:
+        return bool(self._data.get("use_storyboost", False))
+
+    @use_storyboost.setter
+    def use_storyboost(self, value):
+        self._set("use_storyboost", bool(value))
+
+    @property
     def rp_settings(self) -> dict:
         return self._data.get("rp_settings", {})
 

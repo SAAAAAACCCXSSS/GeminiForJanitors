@@ -60,6 +60,14 @@ user's control over their own character. With `//nobot`, the character descripti
 is intentionally removed while the RP rules still apply. Existing prompt
 transformations such as `//noass` continue to work as before.
 
+StoryBoost 2.0 MAX adds continuity, character voice, and prose guidelines from
+`presets/storyboost.txt`. Use `//storyboost on` or `//storyboost off` to save the
+mode for the primary API key across requests, or `//storyboost this` for one
+response. Check the saved mode with `//aboutme`. StoryBoost can run alongside
+`//rp` and the extended COMMAND SYSTEM. With Google Gemini 3.1 Flash-Lite or
+3.5 Flash-Lite, it also requests native `HIGH` thinking. Other models retain
+their normal thinking settings.
+
 Persistent settings use the existing user storage: Redis in production, or
 process-local storage in development.
 

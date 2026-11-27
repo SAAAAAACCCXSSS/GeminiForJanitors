@@ -73,6 +73,7 @@ class JaiRequest:
     use_ooctrick: bool = False
     use_prefill: bool = False
     use_preset: str | None = None
+    use_storyboost: bool = False
     use_search: bool = False
     use_think: bool = False
     use_rp: bool = False
